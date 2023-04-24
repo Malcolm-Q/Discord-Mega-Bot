@@ -32,15 +32,36 @@ Speaking to the bot in voice chat currently always uses the **microphone on the 
 
 Transcribed audio from your mic is sent to ChatGPT (or alpaca if you don't mind waiting) then the response is converted to audio via tts and played.
 
+# New
+* More video editing subcommands,
+* More Image editing commands,
+* Audio manipulation (right now just distortion and reverb),
+* Customizable server currency,
+* Trivia Game, coin flip, 'monster chase' game,
+* Procedurally generated fishing game with turn based 2D emoji UI!
+    * Visual lake maps are simply procedurally generated for variation,
+    * Lake maps are split into 9 tiles each with their own attributes (what fish are in those tiles, how often they bite),
+    * Fishing stats are saved, size weight and price of fish range,
+    * Some fish are rarer and more expensive than others,
+    * Rarity applies to spawning in a tile and being the fish you hooked,
+    * Each user can create their own secret fishing spot.
+* More image restoration (old photo sharpening, coloring, and another face restoration),
+* max dim checks on image api requests to save time and money,
+* command to check the current song the dj is playing,
+* command to see similiar songs or artists to a given song or artist (spotify API),
+* Check Steam game sales,
+* Unsure what game to play? have 3 from your library recommended,
+* A few smaller things.
+
 # Coming Soon
-* More Video Editing subcommands (more effects, cuts, and of course concatenation),
-* More Image Editing commands (mirroring, rotating, face cropping, padding, cropping, etc)
-* Games
-* More photo restoration options / pipelines
-* More error handling / intuitive use
-* More financially considerate API requests (restrict max image dimension)
-* Async API requests
-* Lite version
+* Update help!
+* upgrade [Alpaca](https://github.com/antimatter15/alpaca.cpp) to [LLaMA](https://github.com/ggerganov/llama.cpp)
+* More games / develop fishing game deeper,
+* Slash commands / cogs, make code nicer...
+* Async API requests,
+* Lite version,
+* Discover music through dj,
+* NLP project of some sort,
 * More...
 
 # Examples For Some of My Favourite Features
@@ -72,7 +93,7 @@ Output:
 
 (I converted it to a gif for the readme, it outputs an mp4 by default.)
 
-# All Commands
+# All Commands (MISSING NEWEST COMMANDS)
 
 ## <u>**AI Commands**</u>
 **restore**
