@@ -3,6 +3,27 @@ A discord bot with many AI features, image and video editor, news webscraper, mu
 
 ![failed to load](readme_imgs/help_cmd.PNG)
 
+# New
+* More video editing subcommands,
+* More Image editing commands,
+* Audio manipulation (right now just distortion and reverb),
+* Customizable server currency,
+* Trivia Game, coin flip, 'monster chase' game,
+* Procedurally generated fishing game with turn based 2D emoji UI!
+    * Visual lake maps are simply procedurally generated for variation,
+    * Lake maps are split into 9 tiles each with their own attributes (what fish are in those tiles, how often they bite),
+    * Fishing stats are saved, size weight and price of fish range,
+    * Some fish are rarer and more expensive than others,
+    * Rarity applies to spawning in a tile and being the fish you hooked,
+    * Each user can create their own secret fishing spot.
+* More image restoration (old photo sharpening, coloring, and another face restoration),
+* max dim checks on image api requests to save time and money,
+* command to check the current song the dj is playing,
+* command to see similiar songs or artists to a given song or artist (spotify API),
+* Check Steam game sales,
+* Unsure what game to play? have 3 from your library recommended,
+* A few smaller things.
+
 Most of the AI commands are through the replicate or openai API. Running a lot of these solutions locally is too heavy for a lot of consumer machines let alone free/cheap cloud computing machines. Lightweight solutions are ran locally. However [due to the nature of the project,](https://github.com/antimatter15/alpaca.cpp) the **alpaca LLM is also ran locally.** It uses ~4.5gb of ram and takes my CPU to ~30% usage. Keep this in mind if picking a cloud hosting service and you may have to exclude it and use Chatgpt instead. Alpaca is also slower than an API request to chatGPT, on my machine at least, and currently less flexible in terms of personality. A 19 word prompt generated 144 words in one minute and four seconds. Not awful and it's free.
 
 The [**news API**](https://newsapi.org/) is free, [**Replicate API**](https://replicate.com/) is started for free, [**openai API**](https://openai.com/blog/openai-api) is pay as you go
@@ -31,27 +52,6 @@ Speaking to the bot in voice chat currently always uses the **microphone on the 
 (This is an admin only command by default)
 
 Transcribed audio from your mic is sent to ChatGPT (or alpaca if you don't mind waiting) then the response is converted to audio via tts and played.
-
-# New
-* More video editing subcommands,
-* More Image editing commands,
-* Audio manipulation (right now just distortion and reverb),
-* Customizable server currency,
-* Trivia Game, coin flip, 'monster chase' game,
-* Procedurally generated fishing game with turn based 2D emoji UI!
-    * Visual lake maps are simply procedurally generated for variation,
-    * Lake maps are split into 9 tiles each with their own attributes (what fish are in those tiles, how often they bite),
-    * Fishing stats are saved, size weight and price of fish range,
-    * Some fish are rarer and more expensive than others,
-    * Rarity applies to spawning in a tile and being the fish you hooked,
-    * Each user can create their own secret fishing spot.
-* More image restoration (old photo sharpening, coloring, and another face restoration),
-* max dim checks on image api requests to save time and money,
-* command to check the current song the dj is playing,
-* command to see similiar songs or artists to a given song or artist (spotify API),
-* Check Steam game sales,
-* Unsure what game to play? have 3 from your library recommended,
-* A few smaller things.
 
 # Coming Soon
 * Update help!
