@@ -1,9 +1,8 @@
-import re,cv2,yt_dlp,asyncio,pyttsx3,random,requests,openai,discord,subprocess,os,gc,html,ast
+import re,cv2,yt_dlp,asyncio,pyttsx3,random,requests,openai,discord,os,gc,html,ast,time
 import numpy as np
 from discord.ext import commands
+from discord import app_commands
 import replicate as rp
-from time import sleep
-from discord.utils import get
 from PIL import Image, ImageDraw, ImageFont
 import speech_recognition as sr
 import tensorflow as tf
@@ -15,13 +14,23 @@ import pandas as pd
 from faceRecognitionModule import FaceDetector
 from pedalboard import Pedalboard, Reverb, Distortion
 from pedalboard.io import AudioFile
+from textblob import TextBlob
+import matplotlib.pyplot as plt
+from collections import Counter, defaultdict
+from datetime import datetime, timedelta
+from scipy.signal import savgol_filter
+from prophet import Prophet
+from pandas_datareader import data as pdr
+import yfinance as yf
+
+yf.pdr_override()
 
 # customize these fields
 
 # unless you customize the speech to text try and make this easily/intuitively interpretable by a speech to text solution. EX: instead of 'Adum' do 'Adam'
-bot_name = 'bot'
-bot_token = os.environ['discord_bot']
-currency_name = 'dollars'
+bot_name = 'Bob'
+bot_token  = os.environ['discord_bot']
+currency_name = 'Dollars'
 
 # right click server name (top left) and click copy id
 server_id = 123
@@ -58,31 +67,25 @@ steam_acc_id = 123
 replicate = rp.Client(api_token = os.environ['replicate'])
 
 # describe what you want the bots personality to be. If unsure you can do something like 'you are a helpful assistant who loves to help people'
-personality = f"You are a cheery, funny, and helpful friend. Your name is {bot_name}. When you see the word 'recipe' you give concise and tasty recipes."
+personality = f"You are a happy and helpful assistant. Your name is {bot_name}."
 chat_history= [{"role": "system", "content": personality}]
 
 
 # voice lines the radio station host / dj will say when joining the call.
-dj_intros = [f"Hello hello, you just tuned into the station with the smoothest beats on air.. I'm your host {bot_name} and without further ado our first song of the night is ",
-             "That song really reminds me of the summer of 1988... If you're just tuning in now we've got a good vibe going and up next is ",
-             f"You already know what's up.. It's {bot_name} with beats that will blow your mind. Let's get right into it with ",
-             # add as many as you like.
+dj_intros = ['Hi I am a dj this is a voice line I\'m saying to welcome you to the stream.',
+             'Wow look at that another opening line to say. Feel free to customize these and add your own.',
+             'Just another default stream initilization message floating on by don\'t mind me. Get your admin to change me and add more.'
              ]
-
 # voice lines the radio station host / dj will say between songs.
-dj_bridges = ['coming at you next is',
-              'this is a classic you may not have heard before... or maybe you have who knows... stick around for',
-              'that was nice but this next one is even better...',
-              "See what they did there before the chorus hit? Incredible... This next song has a couple sneaky things like that too..."
-              # add as many as you like.
+dj_bridges = ['Hi I am a dj this is a voice line.',
+              'Wasn\'t that last song great? Up Next we have',
+              'I\'m craving homemade chicken cordon bleu. Wonderful stuff. Customize these or add your own.'
               ]
-
 # voice lines played when introducing recommended songs {} will be formatted as the users name
-dj_recomended = ['Alright while that song was playing {} phoned in and asked me to play a little something. I have not heard it before so I gotta say I am pretty excited. Here comes',
+dj_recomended = ['This is a song that {} recommended. Thanks {}',
                  "{} called in and wanted to change the vibe up a bit so without further a do",
-                 "That song was great and {} wanted to keep the ball rolling so he requested I play "
-                 # add as many as you like.
-                 ]
+                 "Here's a little something brought to us by {}"]
+
 #####################################################################################################
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~{ INITIALIZATION }~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
 #####################################################################################################
@@ -118,7 +121,6 @@ ydl_opts = {
         'preferredquality': '192',
     }],
 }
-alpaca_memory = list()
 
 playing_music = False
 last_clip = ''
@@ -128,17 +130,16 @@ current_song_title=''
 current_song_link=''
 senders = []
 
-all_fish = pd.read_csv('fish_data.csv',index_col=0)
-
+all_fish = pd.read_csv('server_datasets/fish_data.csv',index_col=0)
 
 try:
-    music_list = pd.read_csv('music_dataset.csv',header=0)
+    music_list = pd.read_csv('server_datasets/music_dataset.csv',header=0)
 except:
     music_list = pd.Series()
     print('no music dataset found. run /scrape_music')
 
 try:
-    user_stats = pd.read_csv('user_stats.csv',header=0,index_col=0)
+    user_stats = pd.read_csv('server_datasets/user_stats.csv',header=0,index_col=0)
 except:
     user_stats = pd.DataFrame()
     print('no user stats found. run create_database()')
@@ -148,6 +149,8 @@ requests_allowed = True
 
 take_requests = False
 
+messages = []
+
 #####################################################################################################
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~{ COMMANDS }~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
 #####################################################################################################
@@ -155,60 +158,40 @@ take_requests = False
 
 @client.event
 async def on_ready():
+    try:
+        synced = await client.tree.sync()
+        print(f'synced {len(synced)} commands')
+    except Exception as e:
+        print(e)
     global user_stats
     print('We have logged in as {0.user}'.format(client))
     channel = client.get_channel(main_chat)
     if not os.path.isfile('fishing_levels/Server Lake/lake_map.jpg'):
         tmp = await channel.send('Building Server Lake...')
         await handle_new_lake(tmp,'Server Lake')
-    if not os.path.isfile('user_stats.csv'):
-        tmp = await channel.send('Building user database...')
+    if not os.path.isfile('server_datasets/user_stats.csv'):
+        #tmp = await channel.send('Building user database...')
         user_stats = await create_user_stats()
-    if not os.path.isfile('music_dataset.csv'):
+    if not os.path.isfile('server_datasets/music_dataset.csv'):
         tmp = await channel.send('Scraping music channel...')
         await handle_scrape_music(tmp)
 
-# custom help
 client.remove_command('help')
-@client.command(description='',name='help', brief='Shows a list of commands')
-async def help_command(ctx):
-    embed = discord.Embed(title=f'General Help', description='This is a massive bot so I grouped help into the following subcategories:', color=0x00ff00)
-    embed.add_field(name='🧠 /help_ai',value='Deep AI Commands. image generation, chatbots, image restoration, etc.',inline=False)
-    embed.add_field(name='📰 /help_news',value='Interact with news API and webscrape contents.',inline=False)
-    embed.add_field(name='📷 /help_image_editing',value='Commands to manipulate images. Resizing, cropping, background removal, etc.',inline=False)
-    embed.add_field(name='🎦 /help_video_editing',value='Video editor inside of discord.',inline=False)
-    embed.add_field(name='🎶 /help_music',value='Commands to play music. request songs, personal dj, downloading songs, etc.',inline=False)
-    embed.add_field(name='❔ /help_misc',value='Miscellaneous commands.',inline=False)
-    await ctx.send(embed=embed)
 
-
-@client.command(description='',name='help_ai', brief='Shows a list of commands')
-async def help_ai(ctx):
-    embed = discord.Embed(title=f'AI Help', description='If it has a money icon it costs money and you likely need permission to use:', color=0x00ff00)
-    for command in client.commands:
-        if command.description == 'ai':
-            embed.add_field(name='🧠 ' + command.name, value=command.brief, inline=False)
-    await ctx.send(embed=embed)
-
-@client.command(description='',name='help_news', brief='Shows a list of commands')
-async def help_news(ctx):
+@client.tree.command(name="help_news",description="Explanation on how to use /news.")
+async def help_news(interaction:discord.Interaction):
+    ctx = await commands.Context.from_interaction(interaction)
     embed = discord.Embed(title=f'News Help', description='/news has a few subcommands, here they are.', color=0x00ff00)
     embed.add_field(name='📰 /news', value='Retrieves and embeds the latest top 3 most popular articles.', inline=False)
-    embed.add_field(name='📰 /news explain x y', value='Where `x` is a number from 1 to 3. This will webscrape the url and print the contents of the article.\nWhere `y` is a number from 1-inf representing how many discord paragraphs the bot can return. Leave empty for full article.', inline=False)
+    embed.add_field(name='📰 /news explain x', value='Where `x` is a number from 1 to 3. This will webscrape the url and print the contents of the article.', inline=False)
     embed.add_field(name='📰 /news more', value='Shows more articles continuing to sort by popularity.', inline=False)
     embed.add_field(name='📰 /news <topic>', value='Retrieves and embeds the latest top 3 most popular articles about a given topic.', inline=False)
+
     await ctx.send(embed=embed)
 
-@client.command(description='',name='help_image_editing', brief='Shows a list of commands')
-async def help_image_editing(ctx):
-    embed = discord.Embed(title=f'Image Editor Help', description='Remove Background, resize, crop, etc.', color=0x00ff00)
-    for command in client.commands:
-        if command.description == 'edit':
-            embed.add_field(name=command.name, value=command.brief, inline=False)
-    await ctx.send(embed=embed)
-
-@client.command(description='',name='help_video_editing', brief='Shows a list of commands')
-async def help_video_editing(ctx):
+@client.tree.command(name="help_video_editing",description="Explanation on how to use /editor.")
+async def help_video_editing(interaction:discord.Interaction):
+    ctx = await commands.Context.from_interaction(interaction)
     embed = discord.Embed(title=f'Video Editor Help', description='/editor has a lot of commands, here they are:', color=0x00ff00)
     embed.add_field(name='🎦 /editor load <link>', value='Loads the video you will be working with.', inline=False)
     embed.add_field(name='🎦 /editor save', value='Saves the output video as the working video.\nThis way you don\'t have to reload the original video over and over if you mess up.', inline=False)
@@ -223,459 +206,548 @@ async def help_video_editing(ctx):
 
     await ctx.send(embed=embed)
 
-@client.command(description='',name='help_music', brief='Shows a list of commands')
-async def help_music(ctx):
-    embed = discord.Embed(title=f'Music Command Help', description='Play song, start dj station, download songs, etc', color=0x00ff00)
-    for command in client.commands:
-        if command.description == 'music':
-            embed.add_field(name=':musical_note: ' + command.name, value=command.brief, inline=False)
-    await ctx.send(embed=embed)
+@client.tree.command(name="news",description="Leave arguments blank for top headlines.")
+@app_commands.describe(sub_cmd = "<topic>/more/explain")
+@app_commands.describe(article_cmd = "1-3")
+async def news(interaction:discord.Interaction, sub_cmd:str = '', article_cmd:int = 1):
+    ctx = await commands.Context.from_interaction(interaction)
+    await handle_news(ctx,sub_cmd,article_cmd)
 
-@client.command(description='',name='help_misc', brief='Shows a list of commands')
-async def help_music(ctx):
-    embed = discord.Embed(title=f'Miscellaneous Command Help', description='Fetch random chats', color=0x00ff00)
-    for command in client.commands:
-        if command.description == 'misc':
-            embed.add_field(name=':frame_photo: '+command.name, value=command.brief, inline=False)
-    await ctx.send(embed=embed)
-
-@client.command(description = 'news',brief=':newspaper:\nGet Top Headlines. \nExamples:\n/news = top headlines globally\n/news more = show more articles.\n/news "movies" = show articles about movies/other topic\n/news explain 1 -1 = webscrape content of first article linked, -1 = no char limit, 1 = 2000 char limit, etc.',name='news')
-async def news(ctx, arg1 = '', arg2 = '', arg3 = -1):
-    await handle_news(ctx,arg1,arg2,arg3)
-
-@client.command(description = 'ai',brief=':moneybag: \nTalk to the bot in voice chat (admin only // costs money!). \nExample:\n/talk = make the bot join the call (speak_when_spoken_to = False!).\n say "goodbye" to make the bot leave and wipe memory.',name='talk')
-async def talk(ctx):
-    if ctx.message.author.id == admin_id:await handle_voice_channel(ctx.message)
+@client.tree.command(name="talk",description="Talk to chatGPT in voice chat!")
+@app_commands.describe(speak_when_spoken_to = "If 'yes' then it will only answer you when it hears its name.")
+async def speak_when_spoken_to(interaction:discord.Interaction, speak_when_spoken_to:str = ''):
+    if speak_when_spoken_to.lower() == 'yes': swst = True
+    else:swst=False
+    ctx = await commands.Context.from_interaction(interaction)
+    if ctx.message.author.id == admin_id:
+        async with ctx.typing():
+            await handle_voice_channel(ctx.message, speak_when_spoken_to=swst)
     else:
-        admin = await commands.MemberConverter().convert(ctx, str(admin_id))
-        tmp = await ctx.message.channel.send(f'{admin.mention} React to this message with a 👍 if you want me to execute this command.')
-        await tmp.add_reaction("👍")
-        def check(reaction, user):
-            return user.id == admin_id and str(reaction.emoji) == '👍'
-        try:
-            reaction, user = await client.wait_for('reaction_add', timeout=30.0, check=check)
-        except asyncio.TimeoutError:
-            await ctx.send("Sorry, the command request has timed out.")
-        else:
-            await ctx.send("Executing Command...")
-            await handle_voice_channel(ctx.message)
+        async with ctx.typing():
+            permission = await get_permission(ctx)
+            if permission:
+                await handle_voice_channel(ctx.message, speak_when_spoken_to=swst)
 
-@client.command(description = 'ai',brief=':moneybag: \nTalk to the bot in voice chat (admin only // costs money!). \nExample:\n/talk = make the bot join the call (speak_when_spoken_to = True!).\n say "goodbye" to make the bot leave and wipe memory.',name='speak_when_spoken_to')
-async def speak_when_spoken_to(ctx):
-    if ctx.message.author.id == admin_id:await handle_voice_channel(ctx.message, speak_when_spoken_to=True)
+@client.tree.command(name="chat",description="Chat with ChatGPT. Type 'bye' in message to wipe memory (or /wipe_memory)")
+@app_commands.describe(message = "What do you want to say?")
+async def chat(interaction:discord.Interaction, message:str):
+    ctx = await commands.Context.from_interaction(interaction)
+    if ctx.message.author.id == admin_id:
+        async with ctx.typing():
+            await handle_chat(ctx.message,message)
     else:
-        admin = await commands.MemberConverter().convert(ctx, str(admin_id))
-        tmp = await ctx.message.channel.send(f'{admin.mention} React to this message with a 👍 if you want me to execute this command.')
-        await tmp.add_reaction("👍")
-        def check(reaction, user):
-            return user.id == admin_id and str(reaction.emoji) == '👍'
-        try:
-            reaction, user = await client.wait_for('reaction_add', timeout=30.0, check=check)
-        except asyncio.TimeoutError:
-            await ctx.send("Sorry, the command request has timed out.")
-        else:
-            await ctx.send("Executing Command...")
-            await handle_voice_channel(ctx.message, speak_when_spoken_to=True)
+        async with ctx.typing():
+            permission = await get_permission(ctx)
+            if permission:
+                await handle_chat(ctx.message, message)
 
-@client.command(description = 'ai',brief=':moneybag: \nTalk to the bot in text chat (admin only // costs money!). \nExample:\n/chat "hey <bot_name> how are you?" = it will send a text response. Type "bye" in message to wipe memory.',name='chat')
-async def chat(ctx):
-    if ctx.message.author.id == admin_id:await handle_chat(ctx.message)
-    else:
-        admin = await commands.MemberConverter().convert(ctx, str(admin_id))
-        tmp = await ctx.message.channel.send(f'{admin.mention} React to this message with a 👍 if you want me to execute this command.')
-        await tmp.add_reaction("👍")
-        def check(reaction, user):
-            return user.id == admin_id and str(reaction.emoji) == '👍'
-        try:
-            reaction, user = await client.wait_for('reaction_add', timeout=30.0, check=check)
-        except asyncio.TimeoutError:
-            await ctx.send("Sorry, the command request has timed out.")
-        else:
-            await ctx.send("Executing Command...")
-            await handle_chat(ctx.message)
-
-@client.command(description = 'ai',brief=':moneybag: \nStart a dnd adventure (expiremental WIP) (admin only // costs money!). \nExample:\n/adventure I am a monk, where am I = dungeon master dnd response.',name='adventure')
-async def adventure(ctx):
+@client.tree.command(name="adventure",description="Start a dnd adventure (expiremental WIP) ")
+@app_commands.describe(message = "What do you want to say?")
+async def adventure(interaction:discord.Interaction,message:str):
+    ctx = await commands.Context.from_interaction(interaction)
     global chat_history
     chat_history = [{"role": "system", "content": f"You an excellent dungeon master who asks players what their next move is after speaking."}]
-    if ctx.message.author.id == admin_id:await handle_dm(ctx.message)
+    if ctx.message.author.id == admin_id:
+        async with ctx.typing():
+            await handle_dm(ctx.message,message)
     else:
-        admin = await commands.MemberConverter().convert(ctx, str(admin_id))
-        tmp = await ctx.message.channel.send(f'{admin.mention} React to this message with a 👍 if you want me to execute this command.')
-        await tmp.add_reaction("👍")
-        def check(reaction, user):
-            return user.id == admin_id and str(reaction.emoji) == '👍'
-        try:
-            reaction, user = await client.wait_for('reaction_add', timeout=30.0, check=check)
-        except asyncio.TimeoutError:
-            await ctx.send("Sorry, the command request has timed out.")
-        else:
-            await ctx.send("Executing Command...")
-            await handle_dm(ctx.message)
+        async with ctx.typing():
+            permission = await get_permission(ctx)
+            if permission:
+                await handle_dm(ctx.message,message)
 
-@client.command(description = 'ai',brief=':moneybag: \nGenerate Image with Openai (admin only // costs money!). \nExample:\n/gen_image a siamese cat = generates and posts a 1024x1024 image of a white cat.',name='gen_image')
-async def gen_image(ctx):
-    if ctx.message.author.id == admin_id:await handle_generator(ctx.message)
+@client.tree.command(name="gen_image",description="Generate image with OpenAI ")
+@app_commands.describe(prompt = "Describe the image")
+async def gen_image(interaction:discord.Interaction,prompt:str):
+    ctx = await commands.Context.from_interaction(interaction)
+    
+    if ctx.message.author.id == admin_id:
+        async with ctx.typing():
+            await handle_generator(ctx.message,prompt)
     else:
-        admin = await commands.MemberConverter().convert(ctx, str(admin_id))
-        tmp = await ctx.message.channel.send(f'{admin.mention} React to this message with a 👍 if you want me to execute this command.')
-        await tmp.add_reaction("👍")
-        def check(reaction, user):
-            return user.id == admin_id and str(reaction.emoji) == '👍'
-        try:
-            reaction, user = await client.wait_for('reaction_add', timeout=30.0, check=check)
-        except asyncio.TimeoutError:
-            await ctx.send("Sorry, the command request has timed out.")
-        else:
-            await ctx.send("Executing Command...")
-            await handle_generator(ctx.message)
+        async with ctx.typing():
+            permission = await get_permission(ctx)
+            if permission:
+                await handle_generator(ctx.message,prompt)
 
-@client.command(description = 'ai',brief=':moneybag: \nMake a variation of an image with Openai (admin only // costs money!). \nExample:\n/var_image <link_to_image> = generates and posts a 1024x1024 variation of linked image.',name='var_image')
-async def var_image(ctx):
-    if ctx.message.author.id == admin_id:await handle_variation(ctx.message)
+@client.tree.command(name="var_image",description="Generate a variation of an image with OpenAI (squeezed 1:1 ratio)")
+@app_commands.describe(img = "Paste a link to the image")
+async def var_image(interaction:discord.Interaction,img:str):
+    ctx = await commands.Context.from_interaction(interaction)
+    if ctx.message.author.id == admin_id:
+        async with ctx.typing():
+            await handle_variation(ctx.message,img)
     else:
-        admin = await commands.MemberConverter().convert(ctx, str(admin_id))
-        tmp = await ctx.message.channel.send(f'{admin.mention} React to this message with a 👍 if you want me to execute this command.')
-        await tmp.add_reaction("👍")
-        def check(reaction, user):
-            return user.id == admin_id and str(reaction.emoji) == '👍'
-        try:
-            reaction, user = await client.wait_for('reaction_add', timeout=30.0, check=check)
-        except asyncio.TimeoutError:
-            await ctx.send("Sorry, the command request has timed out.")
-        else:
-            await ctx.send("Executing Command...")
-            await handle_variation(ctx.message)
+        async with ctx.typing():
+            permission = await get_permission(ctx)
+            if permission:
+                await handle_variation(ctx.message,img)
 
-@client.command(description = 'music',brief='Stream a given youtube video to the voice channel (admin only // must be youtube or music.youtube link). \nExample:\n/play <link_to_video> = joins voice channel, streams video, disconnects.',name='play')
-async def play(ctx,arg1):
-    if ctx.message.author.id == admin_id: await handle_video(ctx.message,arg1)
+@client.tree.command(name="play",description="Stream a given youtube video to the voice channel (must be youtube or music.youtube link)")
+@app_commands.describe(url = "Paste a youtube link")
+async def play(interaction:discord.Interaction,url:str):
+    ctx = await commands.Context.from_interaction(interaction)
+    if ctx.message.author.id == admin_id: 
+        async with ctx.typing():
+            await handle_video(ctx.message,url)
     else:
-        admin = await commands.MemberConverter().convert(ctx, str(admin_id))
-        tmp = await ctx.message.channel.send(f'{admin.mention} React to this message with a 👍 if you want me to execute this command.')
-        await tmp.add_reaction("👍")
-        def check(reaction, user):
-            return user.id == admin_id and str(reaction.emoji) == '👍'
-        try:
-            reaction, user = await client.wait_for('reaction_add', timeout=30.0, check=check)
-        except asyncio.TimeoutError:
-            await ctx.send("Sorry, the command request has timed out.")
-        else:
-            await ctx.send("Executing Command...")
-            await handle_video(ctx.message,arg1)
+        async with ctx.typing():
+            permission = await get_permission(ctx)
+            if permission:
+                await handle_video(ctx.message,url)
 
-@client.command(description = 'music',brief='Stop the stream of a youtube video to the voice channel. \nExample:\n/skip = skips/ends song',name='skip')
-async def skip(ctx):
+@client.tree.command(name="skip",description="Skip the stream of a youtube video to the voice channel.")
+async def skip(interaction:discord.Interaction):
+    ctx = await commands.Context.from_interaction(interaction)
     # by simply pausing we'll break the while loop and make a new song be chosen and played.
     voice = discord.utils.get(client.voice_clients, guild=ctx.message.guild)
     if voice.is_playing():voice.pause()
     else:print('no audio playing')
 
-@client.command(description = 'music',brief='Stop the dj or music player and make it leave the call. \nExample:\n/stop_music = stop stream and end call.',name='stop_music')
-async def stop_music(ctx):
+@client.tree.command(name="stop_music",description="Stops the bot from streaming in the voice channel.")
+async def stop_music(interaction:discord.Interaction):
+    ctx = await commands.Context.from_interaction(interaction)
     voice = discord.utils.get(client.voice_clients, guild=ctx.message.guild)
     global playing_music
     try:
         playing_music = False
-        await voice.disconnect()
         voice.pause()
+        await voice.disconnect()
+        
     except: print('cant dc')
 
-@client.command(description = 'music',brief='Start the dj/radio station in the current voice channel. \nExample:\n/dj = dj ai joins the call and plays songs from music channel.',name='dj')
-async def dj(ctx):
+@client.tree.command(name="dj",description="Start the dj/radio station in the current voice channel.")
+async def dj(interaction:discord.Interaction):
+    ctx = await commands.Context.from_interaction(interaction)
     await handle_radio(ctx.message)
 
-@client.command(description = 'misc',brief='Build a dataset of youtube links of music to stream (saved as csv)\nExample:\n`/scrape_music 1000` = scrapes 1000 messages for links in music channel.',name='scrape_music')
-async def scrape_music(ctx,arg1=None):
-    await handle_scrape_music(ctx.message,arg1)
+@client.tree.command(name="scrape_music",description="Build a dataset of youtube links of music to stream (saved as csv)")
+@app_commands.describe(amount = "How many messages to check (leave empty for all).")
+async def scrape_music(interaction:discord.Interaction,amount:int=None):
+    ctx = await commands.Context.from_interaction(interaction)
+    await handle_scrape_music(ctx.message,amount)
 
-@client.command(description = 'edit',brief=':cinema: \nRemove the background of a given image (translucent png). \nExample:\n/remove_bg <link_to_image> = sends new image',name='remove_bg')
-async def remove_bg(ctx,arg1=None,arg2=None,arg3=None):
-    await handle_remove_bg(ctx.message,arg1,arg2,arg3)
+@client.tree.command(name="remove_bg",description="Remove the background of a given image.")
+@app_commands.describe(url = "How many messages to check (leave empty for all).")
+@app_commands.describe(sensitivity = "model sensitivity (0.0-1.0) default = 0.6.")
+@app_commands.describe(passes = "How many times to remove background noise, default = 1.")
+async def remove_bg(interaction:discord.Interaction,url:str,sensitivity:float=None,passes:int=None):
+    ctx = await commands.Context.from_interaction(interaction)
+    await handle_remove_bg(ctx.message,url,sensitivity,passes)
 
-@client.command(description = 'edit',brief=':cinema: \nreplace the background of a given image with another image. \nExample:\n/new_bg <link_to_img_foreground> <link_to_img_new_background> = sends new image with new background',name='new_bg')
-async def new_bg(ctx,arg1=None,arg2=None,arg3=None,arg4=None):
-    await handle_replace_bg(ctx.message,arg1,arg2,arg3,arg4)
+@client.tree.command(name="new_bg",description="Replace the background of a given image with another image.")
+@app_commands.describe(foreground_url = "How many messages to check (leave empty for all).")
+@app_commands.describe(background_url = "How many messages to check (leave empty for all).")
+@app_commands.describe(sensitivity = "model sensitivity (0.0-1.0) default = 0.6.")
+@app_commands.describe(passes = "How many times to remove background noise, default = 1.")
+async def new_bg(interaction:discord.Interaction,foreground_url:str,background_url:str,sensitivity:float=None,passes:int=None):
+    ctx = await commands.Context.from_interaction(interaction)
+    await handle_replace_bg(ctx.message,foreground_url,background_url,sensitivity,passes)
 
-@client.command(description = 'ai',brief='Transfer the style of one image onto another. \nExample:\n/style_transfer <link_to_content_img> <link_to_style_img> = sends new image with new style',name='style_transfer')
-async def style_transfer(ctx):
-    await handle_style_transfer(ctx.message)
+@client.tree.command(name="style_transfer",description="Transfer the style of one image onto another.")
+@app_commands.describe(content_img = "The image to keep.")
+@app_commands.describe(style_img = "The image with the desired style.")
+async def style_transfer(interaction:discord.Interaction,content_img:str,style_img:str):
+    ctx = await commands.Context.from_interaction(interaction)
+    await handle_style_transfer(ctx.message,content_img,style_img)
 
-@client.command(description = 'misc',brief='Send a random image from a channel. \nExample:\n/rand = sends random image from channel',name='rand')
-async def rand(ctx):
+@client.tree.command(name="rand",description="Send a random image from a channel.")
+async def rand(interaction:discord.Interaction):
+    ctx = await commands.Context.from_interaction(interaction)
     await fetch_chat(ctx.message,type = 1,channel = random_image_channel)
 
-@client.command(description = 'misc',brief='Send a random image from main channel. \nExample:\n/rand = sends random image from main channel',name='rand_image')
-async def rand_image(ctx):
+@client.tree.command(name="rand_image",description="Send a random image from main channel.")
+async def rand_image(interaction:discord.Interaction):
+    ctx = await commands.Context.from_interaction(interaction)
     await fetch_chat(ctx.message,type = 1,channel = main_chat)
 
-@client.command(description = 'misc',brief='Send a random chat from main channel. \nExample:\n/rand = sends random chat from main channel',name='rand_chat')
-async def rand_image(ctx):
+@client.tree.command(name="rand_chat",description="Send a random chat from main channel.")
+async def rand_chat(interaction:discord.Interaction):
+    ctx = await commands.Context.from_interaction(interaction)
     await fetch_chat(ctx.message,type = 0,channel = main_chat)
 
-@client.command(description = 'ai',brief='Chat with Alpaca LLM\nExample:\n/alpaca how are you doing today? = will tell you how it is doing',name='alpaca')
-async def alpaca(ctx):
-    await handle_alpaca(ctx.message)
-
-@client.command(description = 'ai',brief='Wipes chatbot memory',name='wipe_memory')
-async def wipe_memory(ctx):
-    global alpaca_memory
+@client.tree.command(name="wipe_memory",description="Wipes chatbot memory.")
+async def wipe_memory(interaction:discord.Interaction):
+    ctx = await commands.Context.from_interaction(interaction)
     global chat_history
     global personality
     chat_history=[{"role": "system", "content": personality}]
-    alpaca_memory = list()
 
-@client.command(description = 'ai',brief=':moneybag: \n Stable diffusion image generation \nExample:\n/sd "A cow jumping over the moon" = image of a cow jumping over the moon',name='sd')
-async def sd(ctx, arg1,arg2 = 0):
-    tmp = int(arg2)
-    if ctx.message.author.id == admin_id: await handle_sd(ctx.message,arg1,arg2)
+@client.tree.command(name="stable_diff",description="Stable diffusion image generation.")
+@app_commands.describe(prompt = "Describe your image.")
+@app_commands.describe(model = "0 or 1 // which stable diffusion model to use.")
+async def sd(interaction:discord.Interaction, prompt:str,model:int = 0):
+    ctx = await commands.Context.from_interaction(interaction)
+    if ctx.message.author.id == admin_id:
+        async with ctx.typing():
+            await handle_sd(ctx.message,prompt,model)
     else:
-        admin = await commands.MemberConverter().convert(ctx, str(admin_id))
-        tmp = await ctx.message.channel.send(f'{admin.mention} React to this message with a 👍 if you want me to execute this command.')
-        await tmp.add_reaction("👍")
-        def check(reaction, user):
-            return user.id == admin_id and str(reaction.emoji) == '👍'
-        try:
-            reaction, user = await client.wait_for('reaction_add', timeout=30.0, check=check)
-        except asyncio.TimeoutError:
-            await ctx.send("Sorry, the command request has timed out.")
+        async with ctx.typing():
+            permission = await get_permission(ctx)
+            if permission:
+                await handle_sd(ctx.message,prompt,model)
+
+@client.tree.command(name="restore",description="Face restoration.")
+@app_commands.describe(url = "Link to your image.")
+async def restore(interaction:discord.Interaction, url:str):
+    ctx = await commands.Context.from_interaction(interaction)
+    if ctx.message.author.id == admin_id: 
+        async with ctx.typing():
+            await handle_restore(ctx.message,url)
+    else:
+        async with ctx.typing():
+            permission = await get_permission(ctx)
+            if permission:
+                await handle_restore(ctx.message,url)
+
+@client.tree.command(name="gen_video",description="Text to Video.")
+@app_commands.describe(prompt = "What video do you want to create?.")
+async def gen_video(interaction:discord.Interaction, prompt:str):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        if ctx.message.author.id == admin_id: await handle_video_gen(ctx.message,prompt)
         else:
-            await ctx.send("Executing Command...")
-            await handle_sd(ctx.message,arg1,arg2)
+            permission = await get_permission(ctx)
+            if permission:
+                await handle_video_gen(ctx.message,prompt)
 
-@client.command(description = 'ai',brief=':moneybag: \n Image Restoration \nExample:\n/restore <link_to_old_image> = restored image',name='restore')
-async def restore(ctx, arg1):
-    if ctx.message.author.id == admin_id: await handle_restore(ctx.message,arg1)
-    else:
-        admin = await commands.MemberConverter().convert(ctx, str(admin_id))
-        tmp = await ctx.message.channel.send(f'{admin.mention} React to this message with a 👍 if you want me to execute this command.')
-        await tmp.add_reaction("👍")
-        def check(reaction, user):
-            return user.id == admin_id and str(reaction.emoji) == '👍'
-        try:
-            reaction, user = await client.wait_for('reaction_add', timeout=30.0, check=check)
-        except asyncio.TimeoutError:
-            await ctx.send("Sorry, the command request has timed out.")
+@client.tree.command(name="edit_face",description="Make changes to a headshot of someone.")
+@app_commands.describe(url = "Link to the face to edit.")
+@app_commands.describe(prompt = "What do you want to change? try: 'a face with a bowl cut'.")
+@app_commands.describe(manipulation_strength = "-10 - 10")
+@app_commands.describe(disentanglement_threshold = "0.08 - 0.3")
+async def edit_face(interaction:discord.Interaction, url:str,prompt:str,manipulation_strength:float=4.1,disentanglement_threshold:float=0.15):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        if ctx.message.author.id == admin_id: await handle_face_edit(ctx.message,url,prompt,manipulation_strength,disentanglement_threshold)
         else:
-            await ctx.send("Executing Command...")
-            await handle_restore(ctx.message,arg1)
+            permission = await get_permission(ctx)
+            if permission:
+                await handle_face_edit(ctx.message,url,prompt,manipulation_strength,disentanglement_threshold)
 
-@client.command(description = 'ai',brief=':moneybag: :moneybag: :moneybag: \n Text to Video \nExample:\n/gen_video "a panda eating bamboo" = video of panda eating bamboo',name='gen_video')
-async def gen_video(ctx, arg1):
-    if ctx.message.author.id == admin_id: await handle_video_gen(ctx.message,arg1)
-    else:
-        admin = await commands.MemberConverter().convert(ctx, str(admin_id))
-        tmp = await ctx.message.channel.send(f'{admin.mention} React to this message with a 👍 if you want me to execute this command.')
-        await tmp.add_reaction("👍")
-        def check(reaction, user):
-            return user.id == admin_id and str(reaction.emoji) == '👍'
-        try:
-            reaction, user = await client.wait_for('reaction_add', timeout=30.0, check=check)
-        except asyncio.TimeoutError:
-            await ctx.send("Sorry, the command request has timed out.")
+@client.tree.command(name="age_face",description="Simulate someones face at a given age or make a gif of them aging.")
+@app_commands.describe(url = "Link to the face to age.")
+@app_commands.describe(age = "The target age (ignore to make a gif).")
+async def age_face(interaction:discord.Interaction, url:str,age:int):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        if ctx.message.author.id == admin_id: await handle_aging(ctx.message,url,age)
         else:
-            await ctx.send("Executing Command...")
-            await handle_video_gen(ctx.message,arg1)
+            permission = await get_permission(ctx)
+            if permission:
+                await handle_aging(ctx.message,url,age)
 
-@client.command(description = 'ai',brief=':moneybag: \n Manipulate a headshot \nExample:\n/edit_face <link_to_face> "a face with a bowl cut" = the given face with a bowl cut',name='edit_face')
-async def edit_face(ctx, arg1,arg2,arg3=4.1,arg4=0.15):
-    if ctx.message.author.id == admin_id: await handle_face_edit(ctx.message,arg1,arg2,arg3,arg4)
-    else:
-        admin = await commands.MemberConverter().convert(ctx, str(admin_id))
-        tmp = await ctx.message.channel.send(f'{admin.mention} React to this message with a 👍 if you want me to execute this command.')
-        await tmp.add_reaction("👍")
-        def check(reaction, user):
-            return user.id == admin_id and str(reaction.emoji) == '👍'
-        try:
-            reaction, user = await client.wait_for('reaction_add', timeout=30.0, check=check)
-        except asyncio.TimeoutError:
-            await ctx.send("Sorry, the command request has timed out.")
+@client.tree.command(name="doodle",description="Provide a doodle and a prompt to generate an image.")
+@app_commands.describe(url = "Link to your doodle.")
+@app_commands.describe(prompt = "How do you imagine your doodle?")
+async def doodle(interaction:discord.Interaction, url:str,prompt:str):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        if ctx.message.author.id == admin_id: await handle_doodle(ctx.message,url,prompt)
         else:
-            await ctx.send("Executing Command...")
-            await handle_face_edit(ctx.message,arg1,arg2,arg3,arg4)
+            permission = await get_permission(ctx)
+            if permission:
+                await handle_doodle(ctx.message,url,prompt)
 
-@client.command(description = 'ai',brief=':moneybag: \n Simulate someones face at a given age or make a gif of them aging \nExample:\n/age_photo <link_to_face> 80 = the given face at age 80 (only send the link to make a gif)',name='age_face')
-async def age_face(ctx, arg1,arg2=None):
-    if ctx.message.author.id == admin_id: await handle_aging(ctx.message,arg1,arg2)
-    else:
-        admin = await commands.MemberConverter().convert(ctx, str(admin_id))
-        tmp = await ctx.message.channel.send(f'{admin.mention} React to this message with a 👍 if you want me to execute this command.')
-        await tmp.add_reaction("👍")
-        def check(reaction, user):
-            return user.id == admin_id and str(reaction.emoji) == '👍'
-        try:
-            reaction, user = await client.wait_for('reaction_add', timeout=30.0, check=check)
-        except asyncio.TimeoutError:
-            await ctx.send("Sorry, the command request has timed out.")
+@client.tree.command(name="explain",description="Ask questions about an image.")
+@app_commands.describe(url = "Link to image.")
+@app_commands.describe(question = "The question you have about the image.")
+async def explain(interaction:discord.Interaction, url:str,question:str):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        if ctx.message.author.id == admin_id: await handle_explanation(ctx.message,url,question)
         else:
-            await ctx.send("Executing Command...")
-            await handle_aging(ctx.message,arg1,arg2)
+            permission = await get_permission(ctx)
+            if permission:
+                await handle_explanation(ctx.message,url,question)
 
-@client.command(description = 'ai',brief=':moneybag: :moneybag: \n Provide a doodle and a prompt to generate an image \nExample:\n/doodle <link_to_img> "a photo of an orange cat" = Photo of orange cat mapped to doodle',name='doodle')
-async def doodle(ctx, arg1,arg2):
-    if ctx.message.author.id == admin_id: await handle_doodle(ctx.message,arg1,arg2)
-    else:
-        admin = await commands.MemberConverter().convert(ctx, str(admin_id))
-        tmp = await ctx.message.channel.send(f'{admin.mention} React to this message with a 👍 if you want me to execute this command.')
-        await tmp.add_reaction("👍")
-        def check(reaction, user):
-            return user.id == admin_id and str(reaction.emoji) == '👍'
-        try:
-            reaction, user = await client.wait_for('reaction_add', timeout=30.0, check=check)
-        except asyncio.TimeoutError:
-            await ctx.send("Sorry, the command request has timed out.")
+@client.tree.command(name="interp",description="Interp between two images.")
+@app_commands.describe(url1 = "Link to starting image.")
+@app_commands.describe(url2 = "Link to ending image.")
+@app_commands.describe(steps = "How Many Steps to take. 1 - 7 (default is 4)")
+async def interp(interaction:discord.Interaction, url1:str,url2:str,steps:int=4):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        if ctx.message.author.id == admin_id: await handle_interp(ctx.message,url1,url2,steps)
         else:
-            await ctx.send("Executing Command...")
-            await handle_doodle(ctx.message,arg1,arg2)
+            permission = await get_permission(ctx)
+            if permission:
+                await handle_interp(ctx.message,url1,url2,steps)
 
-@client.command(description = 'ai',brief=':moneybag: \n Ask questions about an image \nExample:\n/explain <link_to_img_of_CN_tower> "Where is this photo" = "This photo was taken in Toronto"',name='explain')
-async def explain(ctx, arg1,arg2):
-    if ctx.message.author.id == admin_id: await handle_explanation(ctx.message,arg1,arg2)
-    else:
-        admin = await commands.MemberConverter().convert(ctx, str(admin_id))
-        tmp = await ctx.message.channel.send(f'{admin.mention} React to this message with a 👍 if you want me to execute this command.')
-        await tmp.add_reaction("👍")
-        def check(reaction, user):
-            return user.id == admin_id and str(reaction.emoji) == '👍'
-        try:
-            reaction, user = await client.wait_for('reaction_add', timeout=30.0, check=check)
-        except asyncio.TimeoutError:
-            await ctx.send("Sorry, the command request has timed out.")
+@client.tree.command(name="editor",description="video editor using moviepy and pedalboard.")
+@app_commands.describe(subcommand = "load, fx, clip, replace_audio, reverb, distortion, top_text, bottom_text, stats, compress. leave empty for help")
+@app_commands.describe(arg1 = "Argument relative to chosen subcommand")
+@app_commands.describe(arg2 = "Argument relative to chosen subcommand")
+@app_commands.describe(arg3 = "Argument relative to chosen subcommand")
+@app_commands.describe(arg4 = "Argument relative to chosen subcommand")
+@app_commands.describe(arg5 = "Argument relative to chosen subcommand")
+async def editor(interaction:discord.Interaction, subcommand:str = None,arg1:str=None,arg2:str=None,arg3:str=None,arg4:str=None,arg5:int=30):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        if subcommand == None: await help_video_editing(ctx)
+        else: await handle_editor(ctx.message,subcommand,arg1,arg2,arg3,arg4,arg5)
+
+@client.tree.command(name="recommend",description="Recommend a song to the dj.")
+@app_commands.describe(url = "must be youtube or youtube music link.")
+async def recommend(interaction:discord.Interaction, url:str=None):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        take_requests = requests_allowed
+        if take_requests:
+            await handle_recommendation(ctx.message,url)
         else:
-            await ctx.send("Executing Command...")
-            await handle_explanation(ctx.message,arg1,arg2)
+            admin = await commands.MemberConverter().convert(ctx, str(admin_id))
+            await ctx.message.channel.send(f'take_requests is set to false. Get an admin ({admin.mention}) to do `/recommend allow`')
 
-@client.command(description = 'ai',brief=':moneybag: \n Interp between two images \nExample:\n/interp <link_to_img1> <link_to_img2> = interp animation',name='interp')
-async def interp(ctx, arg1,arg2,arg3=2):
-    if ctx.message.author.id == admin_id: await handle_interp(ctx.message,arg1,arg2,arg3)
-    else:
-        admin = await commands.MemberConverter().convert(ctx, str(admin_id))
-        tmp = await ctx.message.channel.send(f'{admin.mention} React to this message with a 👍 if you want me to execute this command.')
-        await tmp.add_reaction("👍")
-        def check(reaction, user):
-            return user.id == admin_id and str(reaction.emoji) == '👍'
-        try:
-            reaction, user = await client.wait_for('reaction_add', timeout=30.0, check=check)
-        except asyncio.TimeoutError:
-            await ctx.send("Sorry, the command request has timed out.")
+@client.tree.command(name="start_trivia",description="Begins a trivia competition.")
+@app_commands.describe(rounds = "1-50, default is 5")
+@app_commands.describe(difficulty = "Easy, Medium, Hard. Ignore for a mix of all.")
+async def trivia(interaction:discord.Interaction, rounds:int = 5, difficulty:str=None):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        await handle_trivia(ctx.message,rounds,difficulty)
+
+@client.tree.command(name="extract_face",description="Crops photo around the face in the photo.")
+@app_commands.describe(url = "Link to your photo.")
+@app_commands.describe(pad = "How much to pad the photo by. (EX: pad=5 will pad the photo by 1/5 the width of the original photo.)")
+async def get_face(interaction:discord.Interaction, url:str, pad:int=0):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        await extract_face(ctx.message,url,pad)
+
+@client.tree.command(name="start_run",description="Begins a monster chase game.")
+@app_commands.describe(rounds = "How many rounds (default is 5).")
+async def start_run(interaction:discord.Interaction, rounds:int = 5):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        await handle_run(ctx.message,rounds)
+
+@client.tree.command(name="create_database",description="Creates a database for user stats (to store how much fake money they have etc.).")
+async def create_db(interaction:discord.Interaction):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        global user_stats
+        if ctx.message.author.id == admin_id: user_stats = await create_user_stats()
+
+@client.tree.command(name="stats",description="Checks your stats (how much fake money you have etc.).")
+async def get_user_stats(interaction:discord.Interaction):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        await check_user_stats(ctx.message)
+
+@client.tree.command(name="flip",description="Challenge another user to a coin flip wager.")
+@app_commands.describe(challenged_user = "@ a user to challenge.")
+@app_commands.describe(wager = "How much do you want to bet?")
+async def coin_flip(interaction:discord.Interaction, challenged_user:str,wager:int):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        await handle_coin_flip(ctx.message,challenged_user,wager)
+
+@client.tree.command(name="similiar_songs",description="Gets similiar songs to a given song.")
+@app_commands.describe(song = "Enter the title and artist of the song.")
+async def similiar_songs(interaction:discord.Interaction, song:str):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        await handle_similiar_songs(ctx.message,song)
+
+@client.tree.command(name="similiar_artists",description="Gets similiar artists to a given artist.")
+@app_commands.describe(artist = "Enter the artist.")
+async def similiar_artists(interaction:discord.Interaction,artist:str):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        await handle_similiar_artists(ctx.message,artist)
+
+@client.tree.command(name="random_game",description="Gets 3 random games from your Steam library.")
+async def random_game(interaction:discord.Interaction):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        await handle_random_game(ctx.message)
+
+@client.tree.command(name="get_sales",description="Gets 3 top steam games on sale.")
+async def get_sales(interaction:discord.Interaction):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        await handle_get_sales(ctx.message)
+
+@client.tree.command(name="cast",description="Cast your fishing rod.")
+async def cast(interaction:discord.Interaction):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        await handle_cast(ctx.message)
+
+@client.tree.command(name="new_lake",description="Generates a new server lake.")
+async def new_lake(interaction:discord.Interaction):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        if ctx.message.author.id == admin_id:
+            await handle_new_lake(ctx.message,"Server Lake")
+
+@client.tree.command(name="move_tile",description="Move to another spot on the current lake.")
+async def move_tile(interaction:discord.Interaction):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        await handle_move_tile(ctx.message)
+
+@client.tree.command(name="find_secret_spot",description="Creates your own fishing spot. Call /secret_spot to travel there.")
+async def secret_fishing_spot(interaction:discord.Interaction):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        await handle_secret_fishing_spot(ctx.message)
+
+@client.tree.command(name="travel_secret_spot",description="Move to your own fishing spot.")
+async def secret_spot(interaction:discord.Interaction):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        await handle_secret_spot(ctx.message)
+
+@client.tree.command(name="shrink",description="Shrinks the image to a given size.")
+@app_commands.describe(url = "Link to the image.")
+@app_commands.describe(max_pixel_dim = "Enter the max height or width in pixels.")
+async def shrink(interaction:discord.Interaction,url:str,max_pixel_dim:int=1000):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        if(max_pixel_dim > 4000):
+            ctx.send(f"Requested max dim is too large ({max_pixel_dim})\nPlease Request a smaller max dimension.")
+            return
+        response = requests.get(url)
+        if 'png' in url:
+            with open('cache/shrink.png', 'wb') as f:
+                f.write(response.content)
         else:
-            await ctx.send("Executing Command...")
-            await handle_interp(ctx.message,arg1,arg2,arg3)
+            with open('cache/shrink.jpg', 'wb') as f:
+                f.write(response.content)
+            image = Image.open('cache/shrink.jpg')
+            image.save('cache/shrink.png')
+        img = Image.open('cache/shrink.png')
+        img = await handle_shrink(img,max_pixel_dim)
+        img.save('cache/shrink.png')
+        await ctx.message.channel.send(file=discord.File('cache/shrink.png'))
 
-@client.command(description = 'editor',brief='moviepy',name='editor')
-async def editor(ctx, cmd = None,arg1=None,arg2=None,arg3=None,arg4=None,arg5=30):
-    if cmd == None: await help_video_editing(ctx)
-    else: await handle_editor(ctx.message,cmd,arg1,arg2,arg3,arg4,arg5)
+@client.tree.command(name="sharpen",description="Good first step for restoring old photos.")
+@app_commands.describe(url = "Link to the image.")
+async def sharpen(interaction:discord.Interaction,url:str):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        await handle_sharpen(ctx.message,url)
 
-@client.command(description = 'music',brief='Recommend a song to the dj',name='recommend')
-async def recommend(ctx, arg1=None):
-    take_requests = requests_allowed
-    if take_requests:
-        await handle_recommendation(ctx.message,arg1)
-    else:
-        admin = await commands.MemberConverter().convert(ctx, str(admin_id))
-        await ctx.message.channel.send(f'take_requests is set to false. Get an admin ({admin.mention}) to do `/recommend allow`')
+@client.tree.command(name="color",description="Colors photos.")
+@app_commands.describe(url = "Link to the image.")
+async def color(interaction:discord.Interaction,url:str):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        await handle_color(ctx.message,url)
 
-@client.command(description = 'games',brief='/start_trivia begins a trivia competition.',name='start_trivia')
-async def trivia(ctx, rounds = 5, difficulty=None):
-    await handle_trivia(ctx.message,rounds,difficulty)
+@client.tree.command(name="restore_2",description="Alternate face restoration model.")
+@app_commands.describe(url = "Link to the image.")
+async def restore_2(interaction:discord.Interaction,url:str):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        await handle_restore_2(ctx.message,url)
 
-@client.command(description = 'edit',brief='/start_trivia begins a trivia competition.',name='extract_face')
-async def get_face(ctx, link=None, pad=0):
-    await extract_face(ctx.message,link,pad)
+@client.tree.command(name="current_song",description="Sends the current song the DJ is playing.")
+async def current_song(interaction:discord.Interaction,url:str):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        await handle_current_song(ctx.message)
 
-@client.command(description = 'games',brief='/start_run begins a monster chase game',name='start_run')
-async def start_run(ctx, rounds = 5):
-    await handle_run(ctx.message,rounds)
+@client.tree.command(name="analyze",description="Get NLP stats of a given user.")
+@app_commands.describe(user = "@ the user to analyze.")
+@app_commands.describe(window_size = "Window size for rolling average. Default is 7")
+async def analyze(interaction:discord.Interaction,user:str,window_size:int=7):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        await handle_analyze(ctx,window_size)
 
-@client.command(description = 'misc',brief='/create_database creates a database for user stats (to store how much fake money they have etc.)',name='create_database')
-async def create_db(ctx):
-    global user_stats
-    user_stats = await create_user_stats()
+@client.tree.command(name="download_chat",description="Download messages for NLP analysis.")
+@app_commands.describe(limit = "Number of messages to download. Default is 5000")
+async def download_chat(interaction:discord.Interaction, limit:int=5000):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        await handle_download_chat(ctx,limit)
 
-@client.command(description = 'misc',brief='`/stats` checks your stats (how much fake money you have etc.)',name='stats')
-async def get_user_stats(ctx):
-    await check_user_stats(ctx.message)
+@client.tree.command(name="sentiment",description="The chat\'s sentiment towards a given topic.")
+@app_commands.describe(topic = "Topic to filter and analyze for.")
+async def sentiment(interaction:discord.Interaction, topic:str):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        await handle_sentiment_topic(ctx.message,topic)
 
-@client.command(description = 'games',brief='`/flip <@user> <wager>` challenge another user to a coin flip wager.',name='flip')
-async def coin_flip(ctx,arg1=None,arg2=None):
-    if arg1 == None:
-        await ctx.message.channel.send('Please @ the user you want to challenge')
-        return
-    if arg2 == None:
-        await ctx.message.channel.send(f'Please specify how much to wager. `/flip @user 50` will bet 50 {currency_name}')
-        return
-    await handle_coin_flip(ctx.message,arg1,arg2)
+@client.tree.command(name="asset_rundown",description="Provides a rundown for a given asset and a history line plot with rolling average.")
+@app_commands.describe(asset = "Ticker symbol. EX: GOOGL, BTC-USD, AMZN")
+@app_commands.describe(period = 'History length for plot. ("1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max")')
+@app_commands.describe(window = "Window for rolling average. Default is 10")
+async def stock_rundown(interaction:discord.Interaction, asset:str, period:str='3mo', window:int=10):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        await handle_stock_rundown(ctx.message,asset, period, window)
 
-@client.command(description = 'music',brief='`/similiar_songs "Deacon Blues"` similiar songs to Deacon Blues.',name='similiar_songs')
-async def similiar_songs(ctx,arg1=None):
-    await handle_similiar_songs(ctx.message,arg1)
+@client.tree.command(name="forecast_asset",description="Forecast the price of an asset.")
+@app_commands.describe(asset = "Ticker symbol. EX: GOOGL, BTC-USD, AMZN")
+@app_commands.describe(future = 'How long to forecast into the future. Default is 30')
+@app_commands.describe(history_timeframe = 'How much history to harvest. Default is 3y')
+@app_commands.describe(changepoint_prior_scale = 'Trend flexibility. Small values grant a rigid trend. Default is 0.05')
+@app_commands.describe(seasonality_prior_scale = 'Regularization strngth. Lower values allow more variability in seasonal. Default is 10')
+@app_commands.describe(n_changepoints = 'Potential changepoints to consider. Higher values allow for more trend flexibility. Default is 25')
+@app_commands.describe(daily_seasonality = 'Whether daily seasonality should be true or false. (Leave false for now).')
+@app_commands.describe(start_at = '0.0 - 1.0 what percent of the history to start the plot at.')
+async def forecast_stock(interaction:discord.Interaction, asset:str, future:int=30, history_timeframe:str='3y', changepoint_prior_scale:float=0.05, seasonality_prior_scale:int=10, n_changepoints:int=25, daily_seasonality:bool=False,start_at:float=0.0):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        await handle_forecast_stock(ctx.message,asset,future,history_timeframe,changepoint_prior_scale,seasonality_prior_scale,n_changepoints,daily_seasonality,start_at)
 
-@client.command(description = 'music',brief='`/similiar_artists "Lou Rawls"` similiar artists to Lou Rawls.',name='similiar_artists')
-async def similiar_artists(ctx,arg1=None):
-    await handle_similiar_artists(ctx.message,arg1)
+@client.tree.command(name="forecast_asset_test",description="Forecast the price of an asset and test it on it's current state.")
+@app_commands.describe(asset = "Ticker symbol. EX: GOOGL, BTC-USD, AMZN")
+@app_commands.describe(history_timeframe = 'How much history to harvest. Default is 3y')
+@app_commands.describe(changepoint_prior_scale = 'Trend flexibility. Small values grant a rigid trend. Default is 0.05')
+@app_commands.describe(seasonality_prior_scale = 'Regularization strngth. Lower values allow more variability in seasonal components. Default is 10')
+@app_commands.describe(n_changepoints = 'Potential changepoints. Higher values allow for more trend flexibility. Default is 25')
+@app_commands.describe(daily_seasonality = 'Whether daily seasonality should be true or false. (Leave false for now).')
+@app_commands.describe(start_at = '0.0 - 1.0 what percent of the history to start the plot at.')
+async def forecast_stock_test(interaction:discord.Interaction, asset:str, history_timeframe:str='3y', changepoint_prior_scale:float=0.05, seasonality_prior_scale:int=10, n_changepoints:int=25, daily_seasonality:bool=False,start_at:float=0.0):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        await handle_forecast_stock_test(ctx.message,asset,history_timeframe,changepoint_prior_scale,seasonality_prior_scale,n_changepoints,daily_seasonality,start_at)
 
-@client.command(description = 'misc',brief='`/random_game` Says 3 random games from your Steam library.',name='random_game')
-async def random_game(ctx):
-    await handle_random_game(ctx.message)
+@client.tree.command(name="gen_music",description="Text to music.")
+@app_commands.describe(prompt_a = "Describe what you want. EX: Soulful blues guitar solo.")
+@app_commands.describe(prompt_b = "Describe Genre/vibe. EX: 90's jazz.")
+@app_commands.describe(steps = "How long (in steps). Default is 50.")
+async def gen_music(interaction:discord.Interaction,prompt_a:str,steps:int=50,prompt_b:str=None):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        await handle_gen_music(ctx.message,prompt_a,steps,prompt_b)
 
-@client.command(description = 'misc',brief='`/get_sales` Says 3 random steam games on sale.',name='get_sales')
-async def get_sales(ctx):
-    await handle_get_sales(ctx.message)
+@client.tree.command(name="buy",description="Tries to fake buy fake shares of a real asset. EX: /buy AMZN 30")
+@app_commands.describe(ticker = "Ticker of the asset you want. EX: AMZN, BTC-USD, BMO.TO")
+@app_commands.describe(amount = "How much money you want to spend (can be left blank for all).")
+async def buy(interaction:discord.Interaction,ticker:str,amount:int=None):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        await handle_buy(ctx.message,ticker,amount)
 
-@client.command(description = 'fishing',brief='`/cast` Cast your fishing rod',name='cast')
-async def cast(ctx):
-    await handle_cast(ctx.message)
+@client.tree.command(name="sell",description="Tries to fake sell fake shares of a real asset. EX: /sell AMZN 30")
+@app_commands.describe(ticker = "Ticker of the asset you want to sell. EX: AMZN, BTC-USD, BMO.TO")
+@app_commands.describe(amount = "How many shares you want to sell (can be left blank for all).")
+async def sell(interaction:discord.Interaction,ticker:str,amount:int=None):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        await handle_sell(ctx.message,ticker,amount)
 
-@client.command(description = 'fishing',brief='`/new_lake "Lake Smith"` Generates a new lake named "Lake Smith"',name='new_lake')
-async def new_lake(ctx,arg1):
-    if ctx.message.author.id == admin_id or ctx.message.author == client.user:
-        await handle_new_lake(ctx.message,arg1)
+@client.tree.command(name="sell_short",description="Tries to fake sell fake short positions of a real asset. EX: /sell_short AMZN 30")
+@app_commands.describe(ticker = "Ticker of the asset you want to sell. EX: AMZN, BTC-USD, BMO.TO")
+@app_commands.describe(amount = "How many shares you want to sell (can be left blank for all).")
+async def sell_short(interaction:discord.Interaction,ticker:str,amount:int=None):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        await handle_sell_short(ctx.message,ticker,amount)
 
-@client.command(description = 'fishing',brief='`/move_tile` Brings up interface to move tile',name='move_tile')
-async def move_tile(ctx):
-    await handle_move_tile(ctx.message)
-
-@client.command(description = 'fishing',brief='`/secret_fishing_spot` creates your own fishing spot. Call `/secret_spot` to travel there',name='secret_fishing_spot')
-async def secret_fishing_spot(ctx):
-    await handle_secret_fishing_spot(ctx.message)
-
-@client.command(description = 'fishing',brief='`/secret_spot` move to your own fishing spot.',name='secret_spot')
-async def secret_spot(ctx):
-    await handle_secret_spot(ctx.message)
-
-@client.command(description = 'edit',brief='`/shrink 1000` Shrinks the image to a max dimension of 1000 pixels.',name='shrink')
-async def shrink(ctx,img,arg2=1000):
-    response = requests.get(img)
-    if 'png' in img:
-        with open('cache/shrink.png', 'wb') as f:
-            f.write(response.content)
-    else:
-        with open('cache/shrink.jpg', 'wb') as f:
-            f.write(response.content)
-        image = Image.open('cache/shrink.jpg')
-        image.save('cache/shrink.png')
-    img = Image.open('cache/shrink.png')
-    img = await handle_shrink(img,arg2)
-    img.save('cache/shrink.png')
-    await ctx.message.channel.send(file=discord.File('cache/shrink.png'))
-
-@client.command(description = 'ai',brief='`/sharpen <link>` microsoft bring old photos back to life model.',name='sharpen')
-async def sharpen(ctx,link):
-    await handle_sharpen(ctx.message,link)
-
-@client.command(description = 'ai',brief='`/color <link>` model that colors old photo.',name='color')
-async def color(ctx,link):
-    await handle_color(ctx.message,link)
-
-@client.command(description = 'ai',brief='`/restore_2 <link>` Another face restoration model.',name='restore_2')
-async def restore_2(ctx,link):
-    await handle_restore_2(ctx.message,link)
-
-@client.command(description = 'music',brief='`/current_song` Sends the current song the DJ is playing.',name='current_song')
-async def current_song(ctx):
-    await handle_current_song(ctx.message)
-
+@client.tree.command(name="buy_short",description="Tries to fake buy fake short positions of a real asset. EX: /buy_short AMZN 30")
+@app_commands.describe(ticker = "Ticker of the asset you want to buy. EX: AMZN, BTC-USD, BMO.TO")
+@app_commands.describe(amount = "How muhc money to spend (can be left blank for all).")
+async def buy_short(interaction:discord.Interaction,ticker:str,amount:int=None):
+    ctx = await commands.Context.from_interaction(interaction)
+    async with ctx.typing():
+        await handle_buy_short(ctx.message,ticker,amount)
 
 @client.event
 async def on_message(message):
@@ -694,6 +766,563 @@ async def on_message(message):
 #####################################################################################################
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~{ FUNCTIONS }~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
 #####################################################################################################
+
+async def handle_forecast_stock_test(message,tag,timeframe,cps,sps,nc,ds,start_at):
+    df = pdr.get_data_yahoo(tag,period=timeframe)
+    df = df[['Close']]
+    df.index = pd.to_datetime(df.index)
+    df.columns = ['y']
+    df.reset_index(inplace=True)
+    df = df.rename(columns={'Date': 'ds', 'y': 'y'})
+
+    train_size = int(len(df) * 0.8)
+    test_size = int(len(df) * 0.3)
+    plot_offset = int(len(df) * start_at)
+
+    train_df = df[:train_size]
+
+    model = Prophet(daily_seasonality=ds,changepoint_prior_scale=cps,seasonality_prior_scale=sps,n_changepoints=nc)
+    model.fit(train_df)
+
+    future = model.make_future_dataframe(periods=test_size,freq='D', include_history=True)
+    forecast = model.predict(future)
+
+    fig, ax = plt.subplots()
+    ax.plot(df['ds'][plot_offset:], df['y'][plot_offset:], label='Actual')
+    ax.plot(forecast['ds'][plot_offset:train_size], forecast['yhat'][plot_offset:train_size], label='Fitted')
+    ax.plot(forecast['ds'][train_size:len(df)], forecast['yhat'][train_size:len(df)], label='Predicted')
+    ax.legend()
+
+    ax.set_title(f'{tag} Closing Price Forecast')
+    ax.set_xlabel('Date')
+    ax.set_ylabel('Closing Price')
+    plt.xticks(rotation = 45)
+    plt.tight_layout()
+    plt.grid()
+    plt.savefig("cache/forecast_crypto_test.png")
+    plt.close()
+    await message.channel.send(file=discord.File('cache/forecast_crypto_test.png'))
+
+async def handle_sell_short(message,keyword,amount):
+    keyword = keyword.upper()
+    col_name = keyword+'_short'
+    price_name = 'ignore_'+keyword+'_short'
+    try:
+        user_stats[col_name]
+    except:
+        await message.channel.send(f'{col_name} is not owned by anyone on the server.')
+        return
+    available = float(user_stats.loc[message.author.id,col_name])
+    if amount == None: amount = available
+    amount = float(amount)
+    if amount > available or amount < 0: amount = available
+
+    
+    try:
+        info = yf.Ticker(keyword).info
+        try:crypto_price = float(info['currentPrice'])
+        except:crypto_price = float(info['regularMarketOpen'])
+        revenue = amount * float(user_stats.loc[message.author.id,price_name])
+
+        profit_loss = amount * (crypto_price - float(user_stats.loc[message.author.id,price_name]))
+
+        net = revenue + profit_loss
+
+        tmp = await message.channel.send(f"Sell {amount} of your {available} {col_name} for ${int(net)}?\n(1 {keyword} = ~${round(crypto_price,3)})")
+        await tmp.add_reaction('✅')
+
+        def check_emoji(reaction, user):
+            return str(reaction.emoji) == '✅' and user.id == message.author.id
+        
+        try:
+            reaction, user = await client.wait_for('reaction_add', timeout=60, check=check_emoji)
+            if float(user_stats.loc[message.author.id,col_name]) >= amount:
+                user_stats.loc[message.author.id,col_name] -= amount
+                user_stats.loc[message.author.id,price_name] = 0
+                user_stats.loc[message.author.id,'money'] += int(net)
+
+                await tmp.edit(content=f"Sold {amount} {col_name} for ${int(net)}!\nYou have {user_stats.loc[message.author.id,'money']} {currency_name} now and ~{round(user_stats.loc[message.author.id,col_name],3)} {col_name}.")
+                await tmp.clear_reactions()
+            else:
+                await tmp.edit(content=f"Nice try.")
+                await tmp.clear_reactions()
+
+        except asyncio.TimeoutError:
+            await tmp.edit(content="Cancelled Transaction.")
+            await tmp.clear_reactions()
+            return
+        
+    except:
+        await message.channel.send("Error Completing Request:\nLikely too many requests have been made recently. (5 per minute max)")
+    user_stats.to_csv('server_datasets/user_stats.csv')
+
+async def handle_buy_short(message,keyword,amount):
+    keyword = keyword.upper()
+    col_name = keyword+'_short'
+    price_name = 'ignore_'+keyword+'_short'
+    try:
+        user_stats.loc[message.author.id,price_name]
+        await message.channel.send("You can only hold one short position per asset")
+        return
+    except:pass
+
+    money = float(user_stats.loc[message.author.id,'money'])
+    if amount == None: amount = money
+    amount = float(amount)
+    if amount > money: amount = money
+    if money < 1:
+        await message.channel.send(f"You have no {currency_name}...")
+        return
+    
+    try:
+        info = yf.Ticker(keyword).info
+        try:crypto_price = float(info['currentPrice'])
+        except:crypto_price = float(info['regularMarketOpen'])
+        
+        tmp = await message.channel.send(f"Buy ${amount} {currency_name} worth of {col_name} at ${crypto_price}?\n(~{round(amount/crypto_price,3)} {keyword})")
+        await tmp.add_reaction('✅')
+
+        def check_emoji(reaction, user):
+            return str(reaction.emoji) == '✅' and user.id == message.author.id
+        
+        try:
+            reaction, user = await client.wait_for('reaction_add', timeout=60, check=check_emoji)
+            if user_stats.loc[message.author.id,'money'] >= amount:
+                user_stats.loc[message.author.id,'money'] -= amount
+                
+                try:user_stats[col_name]
+                except:user_stats[col_name]=0.0
+                user_stats.loc[message.author.id, col_name] += amount / crypto_price
+                user_stats.loc[message.author.id, price_name] = crypto_price
+
+                await tmp.edit(content=f"Bought ${amount} {currency_name} worth of {col_name} at ${crypto_price}!\nYou have {user_stats.loc[message.author.id,'money']} {currency_name} remaining.")
+                await tmp.clear_reactions()
+            else:
+                await tmp.edit(content=f"Nice try.")
+                await tmp.clear_reactions()
+
+        except asyncio.TimeoutError:
+            await tmp.edit(content="Cancelled Transaction.")
+            await tmp.clear_reactions()
+            return
+        
+    except:
+        await message.channel.send("Error Completing Request:\nEither the stock/crypto is not recognized or too many requests have been made recently.")
+    user_stats.to_csv('server_datasets/user_stats.csv')
+
+async def handle_sell(message,keyword,amount):
+    keyword = keyword.upper()
+    try:
+        user_stats[keyword]
+    except:
+        await message.channel.send(f'{keyword} is not owned by anyone on the server.')
+        return
+    available = float(user_stats.loc[message.author.id,keyword])
+    if amount == None: amount = available
+    amount = float(amount)
+    if amount > available or amount < 0: amount = available
+
+    
+    try:
+        info = yf.Ticker(keyword).info
+        try:crypto_price = float(info['currentPrice'])
+        except:crypto_price = float(info['regularMarketOpen'])
+
+        tmp = await message.channel.send(f"Sell {amount} of your {available} {keyword} for ${int(amount*crypto_price)}?\n(1 {keyword} = ~${round(crypto_price,3)})")
+        await tmp.add_reaction('✅')
+
+        def check_emoji(reaction, user):
+            return str(reaction.emoji) == '✅' and user.id == message.author.id
+        
+        try:
+            reaction, user = await client.wait_for('reaction_add', timeout=60, check=check_emoji)
+            if float(user_stats.loc[message.author.id,keyword]) >= amount:
+                user_stats.loc[message.author.id,keyword] -= amount
+                user_stats.loc[message.author.id,'money'] += int(amount*crypto_price)
+
+                await tmp.edit(content=f"Sold {amount} {keyword} for ${int(amount*crypto_price)}!\nYou have {user_stats.loc[message.author.id,'money']} {currency_name} now and ~{round(user_stats.loc[message.author.id,keyword],3)} {keyword}.")
+                await tmp.clear_reactions()
+            else:
+                await tmp.edit(content=f"Nice try.")
+                await tmp.clear_reactions()
+
+        except asyncio.TimeoutError:
+            await tmp.edit(content="Cancelled Transaction.")
+            await tmp.clear_reactions()
+            return
+        
+    except:
+        await message.channel.send("Error Completing Request:\nLikely too many requests have been made recently.")
+    user_stats.to_csv('server_datasets/user_stats.csv')
+
+async def handle_buy(message,keyword,amount):
+    keyword = keyword.upper()
+    money = float(user_stats.loc[message.author.id,'money'])
+    if amount == None: amount = money
+    amount = float(amount)
+    if amount > money: amount = money
+    if money < 1:
+        await message.channel.send(f"You have no {currency_name}...")
+        return
+    
+    try:
+        info = yf.Ticker(keyword).info
+        try:crypto_price = float(info['currentPrice'])
+        except:crypto_price = float(info['regularMarketOpen'])
+
+        tmp = await message.channel.send(f"Buy ${amount} {currency_name} worth of {keyword} at ${crypto_price}?\n(~{round(amount/crypto_price,3)} {keyword})")
+        await tmp.add_reaction('✅')
+
+        def check_emoji(reaction, user):
+            return str(reaction.emoji) == '✅' and user.id == message.author.id
+        
+        try:
+            reaction, user = await client.wait_for('reaction_add', timeout=60, check=check_emoji)
+            if user_stats.loc[message.author.id,'money'] >= amount:
+                user_stats.loc[message.author.id,'money'] -= amount
+
+                try:user_stats[keyword]
+                except:user_stats[keyword]=0.0
+                user_stats.loc[message.author.id, keyword] += amount / crypto_price
+
+                await tmp.edit(content=f"Bought ${amount} {currency_name} worth of {keyword} at ${crypto_price}!\nYou have {user_stats.loc[message.author.id,'money']} {currency_name} remaining.")
+                await tmp.clear_reactions()
+            else:
+                await tmp.edit(content=f"Nice try.")
+                await tmp.clear_reactions()
+
+        except asyncio.TimeoutError:
+            await tmp.edit(content="Cancelled Transaction.")
+            await tmp.clear_reactions()
+            return
+        
+    except:
+        await message.channel.send("Error Completing Request:\nEither the stock/crypto is not recognized or too many requests have been made recently.")
+    user_stats.to_csv('server_datasets/user_stats.csv')
+
+
+
+async def handle_gen_music(message,desc,steps,interp):
+    steps = int(steps)
+    try:
+        if interp != None:
+            output = replicate.run(
+                "riffusion/riffusion:8cf61ea6c56afd61d8f5b9ffd14d7c216c0a93844ce2d82ac1c9ecc9c7f24e05",
+                input={"prompt_a": desc,
+                       "prompt_b": interp,
+                       "num_inference_steps":steps}
+            )
+        else:
+            output = replicate.run(
+                "riffusion/riffusion:8cf61ea6c56afd61d8f5b9ffd14d7c216c0a93844ce2d82ac1c9ecc9c7f24e05",
+                input={"prompt_a": desc,
+                       "num_inference_steps":steps}
+            )
+        
+        print(output)
+        try:
+            response = requests.get(output['audio'])
+            with open('cache/gen_music.mp3', 'wb') as f:
+                f.write(response.content)
+
+            await message.channel.send(file=discord.File('cache/gen_music.mp3'))
+        except Exception as e: 
+            await message.channel.send(e)
+            await message.channel.send(output)
+    except Exception as e:
+        await message.channel.send(e)
+
+async def handle_forecast_stock(message,tag,length,timeframe,cps,sps,nc,ds,start_at):
+    length=int(length)
+    df = pdr.get_data_yahoo(tag,period=timeframe)
+    df = df[['Close']]
+    df.index = pd.to_datetime(df.index)
+    df.columns = ['y']
+    df.reset_index(inplace=True)
+    df = df.rename(columns={'Date': 'ds', 'y': 'y'})
+
+    model = Prophet(daily_seasonality=ds,changepoint_prior_scale=cps,seasonality_prior_scale=sps,n_changepoints=nc)
+    model.fit(df)
+
+    future = model.make_future_dataframe(periods=length, freq='D', include_history=True)
+    forecast = model.predict(future)
+
+    plot_split = int(len(df) * 0.8)
+    plot_offset = int(len(df) * start_at)
+
+    fig, ax = plt.subplots()
+    ax.plot(df['ds'][plot_offset:], df['y'][plot_offset:], label='Actual')
+    ax.plot(forecast['ds'][plot_offset:len(df)], forecast['yhat'][plot_offset:len(df)], label='Fitted')
+    ax.plot(forecast['ds'][len(df):], forecast['yhat'][len(df):], label='Predicted')
+    ax.legend()
+    ax.set_title(f'{tag} Closing Price Forecast')
+    ax.set_xlabel('Date')
+    ax.set_ylabel('Closing Price')
+    plt.xticks(rotation = 45)
+    plt.tight_layout()
+    plt.grid()
+    plt.savefig("cache/forecast_crypto.png")
+    plt.close()
+    await message.channel.send(file=discord.File('cache/forecast_crypto.png'))
+
+async def handle_stock_rundown(message, tag, period, window):
+    window = int(window)
+
+    data = pdr.get_data_yahoo(tag, period=period,interval='1h')
+    ma = data['Close'].rolling(window=window,step = window // 4).mean()
+
+    data['Close'].plot()
+    plt.plot(ma.index, ma, label='Moving Average')
+    plt.title(f'{period} {tag} chart')
+    plt.tight_layout()
+    plt.grid()
+    plt.xticks(rotation = 45)
+    plt.savefig('cache/timeseries_stock.png')
+    plt.close()
+
+
+    tick = yf.Ticker(tag)
+
+    info = defaultdict(lambda: 0,tick.info)
+
+    stock_news = tick.news
+
+    colors = {"none":0x000000, "strong_buy":0x00FFFF, "buy":0x00FF00, "hold":0xFFFF00, "sell":0xFF9900,"strong_sell":0xFF0000}
+    try: additionalDesc = f", Industry: {info['industry']}, Sector: {info['sector']}"
+    except: additionalDesc = ''
+
+    embed = discord.Embed(title=f"***Rundown For {info['shortName']}***",description=f"Current Price: ${info['currentPrice']} {info['currency']}{additionalDesc}",color=colors[info['recommendationKey']])
+
+    try:analysis = f"Of the {info['numberOfAnalystOpinions']} opinions, the consensus is **'{info['recommendationKey']}'** with an average score of **{info['recommendationMean']}**.\n**Target High:** {info['targetHighPrice']}\n**Target Low:** {info['targetLowPrice']}\n**Target Mean:** {info['targetMeanPrice']}\n"
+    except Exception as e: 
+        analysis = "It looks like there aren't enough opinions on this stock.\n"
+        print(e)
+    embed.add_field(name="🕵️🕵️🕵️\n***Analysts:***",value=analysis,inline=False)
+
+    try: stats = f"{tag} had a **52 week low** of {info['fiftyTwoWeekLow']} and a **high** of {info['fiftyTwoWeekHigh']}.\n**Price To Sales (Trailing 12 Months):** {info['priceToSalesTrailing12Months']}\n**Enterprise Value:** {format(int(info['enterpriseValue']),',')}\n**Trailing Annual Dividend Yield:** {info['trailingAnnualDividendYield']}\n**Profit Margin:** %{float(info['profitMargins'])*100}\n**Price To Book:** {info['priceToBook']} (Book Value: {info['bookValue']})\n**Trailing EPS:** {info['trailingEps']}, **Forward EPS:** {info['forwardEps']}\n**Peg Ratio:** {info['pegRatio']}\n**Trailing PE:** {info['trailingPE']}, **Forward PE:** {info['forwardPE']}\n**Average Volume (10 Days):** {format(int(info['averageVolume10days']),',')}\n"
+    except Exception as e: 
+        stats = "Error retrieving stats.\n"
+        print(e)
+    embed.add_field(name="📊📊📊\n***Stats:***",value=stats,inline=False)
+
+    try: shares = f"**Float Shares:** {format(int(info['floatShares']),',')}\n**Outstanding Shares:** {format(int(info['sharesOutstanding']),',')}\n**float to outstanding share ratio:** {round((int(info['floatShares'])+1)/(int(info['sharesOutstanding'])+1),3)}\n**Shares Short:** {format(int(info['sharesShort']),',')} (%{float(info['sharesPercentSharesOut'])*100})\n**Short Last Month:** {format(int(info['sharesShortPriorMonth']),',')}\n**% Held By Insiders:** %{float(info['heldPercentInsiders'])*100}\n**% Held By Institutions:** %{float(info['heldPercentInstitutions'])*100}\n"
+    except Exception as e:
+        shares = "Error retrieving shares.\n"
+        print(e)
+    embed.add_field(name="📜📜📜\n***Shares:***",value=shares,inline=False)
+
+    try: News = f"**Top Headlines**: \n[{stock_news[0]['title']}]({stock_news[0]['link']})\n[{stock_news[1]['title']}]({stock_news[1]['link']})\n[{stock_news[2]['title']}]({stock_news[2]['link']})"
+    except: News = "Unable to fetch news."
+    embed.add_field(name="📰📰📰\n***News:***",value=News,inline=False)
+
+
+    tmp = await message.channel.send(embed=embed)
+    await tmp.add_reaction('🧠')
+    await message.channel.send(file=discord.File('cache/timeseries_stock.png'))
+    def check_emoji(reaction, user):
+        return str(reaction.emoji) == '🧠' and user.id == message.author.id
+    try:
+        
+        reaction, user = await client.wait_for('reaction_add', timeout=60, check=check_emoji)
+        await tmp.clear_reactions()
+        tmp_news = f"{stock_news[0]['title']}\n{stock_news[1]['title']}\n{stock_news[2]['title']}"
+        prompt = "In less than 2000 characters, does this stock seem overvalued or undervalued? Summarize this info and provide insights:\n" + stats.replace('*', '') + shares.replace('*', '') + "\nTop Headlines:\n" + tmp_news.replace('*', '')
+        print(prompt)
+        completion = openai.ChatCompletion.create(
+            model = "gpt-3.5-turbo",
+            temperature = 0.8,
+            max_tokens = 2000,
+            messages = [
+            {"role": "system", "content": "You are a financial advisor who is excellent at interpretting stock data and loves giving their input. (a value of '0' means the data is not available)"},
+            {"role": "user", "content":prompt}
+            ]
+        )
+
+        await tmp.reply(completion.choices[0].message.content)
+        
+    except asyncio.TimeoutError:
+        await tmp.clear_reactions()
+    
+    del tick,info,data,ma
+
+
+async def handle_sentiment_topic(message, keyword):
+    global messages
+    if len(messages) < 1:
+        return
+
+    keyword_messages = [message for message in messages if keyword.lower() in " " + message.content.lower()]
+
+    sentiments = [TextBlob(message.content).sentiment.polarity for message in keyword_messages]
+    avg_sentiment = sum(sentiments) / len(sentiments)
+
+    user_counts = defaultdict(int)
+    for message in keyword_messages:
+        user_counts[message.author.name] += 1
+    top_users = sorted(user_counts.items(), key=lambda x: x[1], reverse=True)[:3]
+
+    min_sentiment_message = min(keyword_messages, key=lambda message: TextBlob(message.content).sentiment.polarity)
+    max_sentiment_message = max(keyword_messages, key=lambda message: TextBlob(message.content).sentiment.polarity)
+
+    embed = discord.Embed(title=f"Global Sentiment on {keyword}", description=f"{len(keyword_messages)}/{len(messages)} messages are about {keyword}.")
+    embed.add_field(name=f"Average Sentiment:", value=f'{round(avg_sentiment, 4)}', inline=False)
+    embed.add_field(name=f"Highest Sentiment Message ({max_sentiment_message.author.display_name}):", value=f'{max_sentiment_message.content}', inline=False)
+    embed.add_field(name=f"Lowest Sentiment Message ({min_sentiment_message.author.display_name}):", value=f'{min_sentiment_message.content}', inline=False)
+    embed.add_field(name=f"Users Who Mention {keyword} the Most:", value='\n\n'.join(f'{user}: {count}' for user, count in top_users), inline=False)
+
+    await message.channel.send(embed=embed)
+
+async def handle_download_chat(ctx, limit):
+    limit = int(limit)
+    await ctx.message.channel.send(f"Loading {limit} messages into memory\nThis will take approximately {limit//70} seconds")
+
+    start_time = time.monotonic()
+    global messages
+    async for message in ctx.channel.history(limit=limit):
+        messages.append(message)
+    end_time = time.monotonic()
+    elapsed_time = end_time - start_time
+
+    await ctx.message.channel.send(f"{limit} messages have been loaded into memory in {elapsed_time:.2f} seconds")
+
+async def handle_analyze(ctx,window_size):
+    window_size = int(window_size)
+    user = client.get_user(ctx.message.mentions[0].id)
+    if user is None:
+        await ctx.send(f"Can't Find User.")
+        return
+    global messages
+    if len(messages) < 1:
+        await ctx.send("Please call `/download_chat` first.")
+        return
+    
+    user_messages = []
+    for message in messages:
+        if message.author == user:
+            user_messages.append(message)
+
+    percentage = round(len(user_messages) / len(messages) * 100, 2)
+
+    weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+    weekday_counts = Counter(message.created_at.weekday() for message in user_messages)
+    weekday_data = [weekday_counts[i] for i in range(7)]
+    fig, ax = plt.subplots()
+    ax.bar(weekdays, weekday_data)
+    ax.set_ylabel('Number of Messages')
+    ax.set_xlabel('Day of the Week')
+    ax.set_title(f"{user.display_name}'s Activity by Day of the Week")
+    plt.xticks(rotation=45, ha='right')
+    plt.tight_layout()
+    plt.savefig('cache/weekday_activity.png')
+    plt.close()
+
+    noun_counts = Counter(word.lower() for message in user_messages for word, tag in TextBlob(message.content).tags if tag.startswith('NN') and not re.search("[^a-zA-Z]", word) and 'https' not in word)
+    top_nouns = noun_counts.most_common(10)
+
+    sentiment_scores = []
+    for message in user_messages:
+        sentiment_scores.append(TextBlob(message.content).sentiment.polarity)
+
+    if sentiment_scores:
+        sorted_messages = sorted(user_messages, key=lambda message: TextBlob(message.content).sentiment.polarity, reverse=True)
+        top_messages = sorted_messages[:3]
+        bottom_messages = sorted_messages[-3:]
+        average_sentiment = np.mean(sentiment_scores)
+        weekday_sentiment = defaultdict(list)
+        for message in user_messages:
+            weekday = message.created_at.weekday()
+            sentiment = TextBlob(message.content).sentiment.polarity
+            weekday_sentiment[weekday].append(sentiment)
+        average_weekday_sentiment = {}
+        for weekday, sentiments in weekday_sentiment.items():
+            average_weekday_sentiment[weekdays[weekday]] = np.mean(sentiments)
+
+        weekdays_ordered = pd.Categorical(average_weekday_sentiment.keys(), categories=['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'], ordered=True)
+
+        sorted_weekdays = [weekday for weekday, sentiment in sorted(average_weekday_sentiment.items(), key=lambda x: weekdays.index(x[0]))]
+        sorted_sentiments = [average_weekday_sentiment[day] for day in sorted_weekdays]
+        fig, ax = plt.subplots()
+        ax.bar(sorted_weekdays, sorted_sentiments)
+        ax.set_ylabel('Sentiment Score')
+        ax.set_xlabel('Day of the Week')
+        ax.set_title(f"{user.name}'s Sentiment by Day of the Week")
+        plt.xticks(rotation=45, ha='right')
+        plt.tight_layout()
+        plt.savefig('cache/weekday_sentiment.png')
+        plt.close()
+    else:
+        top_messages = None
+        bottom_messages = None
+        average_sentiment = None
+        average_weekday_sentiment = None
+
+    daily_counts = defaultdict(int)
+    for message in user_messages:
+        date = message.created_at.date()
+        daily_counts[date] += 1
+
+    dates = sorted(daily_counts.keys())
+    counts = [daily_counts[date] for date in dates]
+
+    fig, ax = plt.subplots()
+    ax.plot(dates, counts)
+    n = len(dates) // 15
+    if n == 0: n = 1
+    xticks = [date.strftime('%m/%d') for date in dates[::n]]
+    ax.set_xticks(dates[::n])
+    ax.set_xticklabels(xticks)
+    ax.set_xlabel('Date')
+    ax.set_ylabel('Number of Messages')
+    ax.set_title('Daily Message Count')
+    plt.xticks(rotation=45, ha='right')
+    plt.tight_layout()
+    
+    smoothed_counts = savgol_filter(counts, window_size, 3)
+    ax.plot(dates, smoothed_counts, color='red')
+    
+    plt.savefig('cache/messages_over_time.png')
+    plt.close()
+
+
+    avg_sentiments = {}
+    for message in user_messages:
+        date = message.created_at.date()
+        if date in avg_sentiments:
+            avg_sentiments[date].append(TextBlob(message.content).sentiment.polarity)
+        else:
+            avg_sentiments[date] = [TextBlob(message.content).sentiment.polarity]
+    avg_sentiments = {date: np.mean(sentiments) for date, sentiments in avg_sentiments.items()}
+
+    fig, ax = plt.subplots()
+    ax.plot(list(avg_sentiments.keys()), list(avg_sentiments.values()))
+    n = len(avg_sentiments.keys()) // 15
+    if n == 0: n = 1
+    xticks = [date.strftime('%m/%d') for date in list(avg_sentiments.keys())[::n]]
+    ax.set_xticks(list(avg_sentiments.keys())[::n])
+    ax.set_xticklabels(xticks)
+    ax.set_title('Average Sentiment per Day')
+    ax.set_xlabel('Date')
+    ax.set_ylabel('Average Sentiment')
+    plt.xticks(rotation=45, ha='right')
+    plt.tight_layout()
+    
+    smoothed_sentiments = savgol_filter(list(avg_sentiments.values()), window_size, 3)
+    ax.plot(list(avg_sentiments.keys()), smoothed_sentiments, color='red')
+    
+    plt.savefig('cache/sentiment_over_time.png')
+    plt.close()
+
+    embed = discord.Embed(title=f'{user.display_name}\'s behaviour:',description=f'{user.display_name} is responsible for {len(user_messages)} messages, or {percentage}% of the last {len(messages)}.',color=0x00ff00)
+    embed.add_field(name=f"Top 10 Words Used:",value='\n'.join(f"{noun.capitalize()} ({count} times)" for noun, count in top_nouns),inline=False)
+    embed.add_field(name=f"Top 3 Most Positive Messages:",value='\n\n'.join(str(i+1) + ": " + word.content for i, word in enumerate(top_messages)),inline=False)
+    embed.add_field(name=f"Top 3 Most Negative Messages:",value='\n\n'.join(str(i+1) + ": " + word.content for i, word in enumerate(bottom_messages)),inline=False)
+    embed.add_field(name=f"Average Sentiment:",value=f"{round(average_sentiment,4)}",inline=False)
+
+    await message.channel.send(embed=embed)
+    await message.channel.send(file=discord.File('cache/weekday_activity.png'))
+    await message.channel.send(file=discord.File('cache/weekday_sentiment.png'))
+    await message.channel.send(file=discord.File('cache/messages_over_time.png'))
+    await message.channel.send(file=discord.File('cache/sentiment_over_time.png'))
 
 async def handle_current_song(message):
     if current_song_link != '':
@@ -820,7 +1449,7 @@ async def handle_shrink(img,max_dim = 1000):
 async def handle_secret_spot(message):
     if os.path.isfile(f'fishing_levels/@{message.author.display_name} Lake/lake_data.csv'):
         user_stats.loc[message.author.id,'lake'] = f'@{message.author.display_name} Lake'
-        user_stats.to_csv('user_stats.csv')
+        user_stats.to_csv('server_datasets/user_stats.csv')
         await message.channel.send('You are now in your secret fishing spot.')
     else:
         await message.channel.send('No secret spot found. Call `/secret_fishing_spot`')
@@ -873,7 +1502,7 @@ async def handle_move_tile(message):
     pos = [column,row]
     print(pos)
     user_stats.loc[message.author.id,'fishing_pos'] = f'[{column},{row}]'
-    user_stats.to_csv('user_stats.csv')
+    user_stats.to_csv('server_datasets/user_stats.csv')
 
     await tmp.edit(content=f"Moved to {int_to_alpha[pos[0]]}{pos[1]+1}")
     await tmp.clear_reactions()
@@ -1125,7 +1754,7 @@ async def handle_cast(message):
         if float(fish_stats['size']) > float(user_stats.loc[message.author.id,'longest_catch']): user_stats.loc[message.author.id,'longest_catch'] = round(mult * fish_stats['size'],2)
         if float(fish_stats['weight']) > float(user_stats.loc[message.author.id,'heaviest_catch']): user_stats.loc[message.author.id,'heaviest_catch'] = round(mult * fish_stats['weight'],2)
 
-        user_stats.to_csv('user_stats.csv')
+        user_stats.to_csv('server_datasets/user_stats.csv')
         await init_msg.clear_reactions()
 
 
@@ -1166,39 +1795,6 @@ async def handle_random_game(message):
         await message.channel.send(embed=embed)
     except Exception as e:
         await message.channel.send(e)
-
-async def get_album_cover(song_name):
-    global spotify_token
-    if song_name == None:
-        return None
-    headers = {'Authorization': f'Bearer {spotify_token}'}
-    response = requests.get('https://api.spotify.com/v1/search', 
-                        headers=headers,
-                        params={'q': song_name, 'type': 'track', 'limit': 1})
-    if response.status_code == 401:
-        url = "https://accounts.spotify.com/api/token"
-        headers = {"Content-Type": "application/x-www-form-urlencoded"}
-
-        data = {
-            "grant_type": "client_credentials",
-            "client_id": spotify_client_id,
-            "client_secret": spotify_secret,
-        }
-
-        response = requests.post(url, headers=headers, data=data)
-        spotify_token = response.json()["access_token"]
-        with open('cache/spotify_token.txt','w') as f:
-            f.write(spotify_token)
-
-        headers = {'Authorization': f'Bearer {spotify_token}'}
-        response = requests.get('https://api.spotify.com/v1/search', 
-                        headers=headers,
-                        params={'q': song_name, 'type': 'track', 'limit': 1})
-        if response.status_code == 401:
-            return None
-    track = response.json()['tracks']['items'][0]
-    album_art_url = track['album']['images'][0]['url']
-    return album_art_url
 
 async def handle_similiar_songs(message,arg1):
     global spotify_token
@@ -1302,12 +1898,12 @@ async def handle_coin_flip(message,other_user,wager):
         await message.channel.send(f'{message.author.mention} won {wager*2} {currency_name}!')
         user_stats.loc[user.id,'money'] -= wager
         user_stats.loc[message.author.id,'money'] += wager
-        user_stats.to_csv('user_stats.csv')
+        user_stats.to_csv('server_datasets/user_stats.csv')
     else:
         await message.channel.send(f'{message.mentions[0].mention} won {wager*2} {currency_name}!')
         user_stats.loc[user.id,'money'] += wager
         user_stats.loc[message.author.id,'money'] -= wager
-        user_stats.to_csv('user_stats.csv')
+        user_stats.to_csv('server_datasets/user_stats.csv')
     
 
 async def check_user_stats(message):
@@ -1319,6 +1915,11 @@ async def check_user_stats(message):
     embed.add_field(name=f'Number of Species Caught',value=f'''{len(ast.literal_eval(stats_dict["species_caught"].strip("'")))}''',inline=False)
     embed.add_field(name=f'Longest Fish Caught',value=f'{stats_dict["longest_catch"]} inches',inline=False)
     embed.add_field(name=f'Heaviest Fish Caught',value=f'{stats_dict["heaviest_catch"]} pounds',inline=False)
+    for asset in user_stats.columns:
+        if asset not in ["money", "lake", "fish_caught", "fishing_pos", "species_caught", "longest_catch", "heaviest_catch"] and 'ignore' not in asset:
+            value = round(float(stats_dict[asset]),3)
+            if value > 0:
+                embed.add_field(name=f'{asset}', value=f'~{value}', inline=True)
     await message.channel.send(embed=embed)
 
 async def create_user_stats():
@@ -1326,9 +1927,9 @@ async def create_user_stats():
     # change this if bot is on multiple servers
     for user in client.guilds[0].members:
         if user != client.user:
-            users[user.id] = {'money':0,'fishing_pos':[0,0],'lake':'Server Lake','fish_caught':0,'species_caught':[],'longest_catch':0,'heaviest_catch':0}
+            users[user.id] = {'money':10000,'fishing_pos':[0,0],'lake':'Server Lake','fish_caught':0,'species_caught':[],'longest_catch':0,'heaviest_catch':0}
     df = pd.DataFrame.from_dict(users,orient='index')
-    df.to_csv('user_stats.csv')
+    df.to_csv('server_datasets/user_stats.csv')
     return df
 
 async def handle_run(message,runs=5):
@@ -1400,7 +2001,7 @@ async def handle_run(message,runs=5):
             embed.add_field(name='Reward:', value=f'50 {currency_name}')
             for user in users:
                 user_stats.loc[user.id,'money'] += 50
-            user_stats.to_csv('user_stats.csv')
+            user_stats.to_csv('server_datasets/user_stats.csv')
             failed_users.clear()
     else:
         embed = discord.Embed(title='No one survived the monster..', color=0xFF0000)
@@ -1939,7 +2540,7 @@ async def handle_scrape_music(message,arg1=None):
         current_message += 1
 
     music_list = pd.Series(messages)
-    music_list.to_csv('music_dataset.csv',index=False)
+    music_list.to_csv('server_datasets/music_dataset.csv',index=False)
     await message.channel.send(f'Scraped {len(messages)} songs from music channel and saved to CSV')
 
 async def extract_youtube_id(message):
@@ -2248,26 +2849,8 @@ async def handle_sd(message,prompt = None, model=0):
         except Exception as e:
             await message.channel.send(e)
             await message.channel.send(output)
-        await message.channel.send(f"Don't like how it looks? Try:\n/sd \"prompt\" x\nwhere `x` is a number ranging from 0-{len(models)-1}")
     except Exception as e:
         await message.channel.send(e)
-
-async def handle_alpaca(message):
-    global alpaca_memory
-    prompt = message.content[8:]
-    print(' '.join([line for line in alpaca_memory]) + ' Respond to: '+prompt)
-
-    # coldstart and terminate
-    cmd = ['./chat', '-p', ' '.join([line for line in alpaca_memory]) + ' Respond to: '+prompt]
-    output = subprocess.check_output(cmd, universal_newlines=True)
-
-    await message.channel.send(output)
-    if len(alpaca_memory) > 6:
-        alpaca_memory.pop(1)
-        alpaca_memory.pop(2)
-    if 'bye' in message.content or 'goodbye' in message.content: alpaca_memory = []
-    alpaca_memory.append('I said:'+message.content[8:])
-    alpaca_memory.append('you said:'+output)
 
 async def handle_style_transfer(message):
     max_size = 8000000 
@@ -2472,12 +3055,12 @@ async def handle_remove_bg(message,url=None,sensitivity=None,passes=None):
 
     await message.channel.send(file=discord.File('cache/input_image.png'))
 
-async def handle_news(ctx,arg1,arg2,arg3):
+async def handle_news(ctx,arg1,arg2):
     global loop
     global news
     if arg1.lower() == 'more':
         if news == []:
-            await ctx.message.channel.send('No news has been retrived yet. Please call "/news" or "/news <topic>"')
+            await ctx.channel.send('No news has been retrived yet. Please call "/news" or "/news <topic>"')
             return
         loop += 3
         if loop >= len(news['articles']):
@@ -2499,7 +3082,6 @@ async def handle_news(ctx,arg1,arg2,arg3):
             return
         if arg2 == '': arg2 = 1
         arg2 = int(arg2) - 1
-        arg3 = int(arg3)
 
         url = news['articles'][arg2 + loop]['url']
         print('making request')
@@ -2539,9 +3121,15 @@ async def handle_news(ctx,arg1,arg2,arg3):
         if ctx.message.author.id == admin_id:
             loop = 0
             prompt = arg1+'&'
+
+            now = datetime.now()
+            two_days_ago = now - timedelta(days=2)
+            formatted_date = two_days_ago.strftime("from=%Y-%m-%d&")
+
             url = ('https://newsapi.org/v2/everything?'
                 f'q={prompt}'
-                'sortBy=date&'
+                f'from={formatted_date}'
+                'sortBy=popularity&'
                 'pageSize=30&'
                 f'apiKey={news_key}')
             news = requests.get(url).json()
@@ -2558,11 +3146,17 @@ async def handle_news(ctx,arg1,arg2,arg3):
             if arg1.lower() in news_topics or len(news_topics) == 0:
                 loop = 0
                 prompt = arg1+'&'
+                now = datetime.now()
+                two_days_ago = now - timedelta(days=2)
+                formatted_date = two_days_ago.strftime("from=%Y-%m-%d&")
+
                 url = ('https://newsapi.org/v2/everything?'
-                    f'q={prompt}'
-                    'sortBy=date&'
-                    'pageSize=30&'
-                    f'apiKey={news_key}')
+                f'q={prompt}'
+                f'from={formatted_date}'
+                'sortBy=popularity&'
+                'pageSize=30&'
+                f'apiKey={news_key}')
+
                 news = requests.get(url).json()
                 for i in range(3):
                     embed = discord.Embed(title=news['articles'][i + loop]['title'], url=news['articles'][i + loop]['url'])
@@ -2607,11 +3201,11 @@ async def handle_radio(message):
 
     # get songs
     try:
-        music = pd.read_csv('music_dataset.csv',header=0)
+        music = pd.read_csv('server_datasets/music_dataset.csv',header=0)
     except:
         await message.channel.send('No music dataset found. Scraping channel now.')
         await handle_scrape_music(message,None)
-        music = pd.read_csv('music_dataset.csv',header=0)
+        music = pd.read_csv('server_datasets/music_dataset.csv',header=0)
 
     # select, process, and stream random song
     stream_url, music = await handle_dj(music,dj_intros)
@@ -2755,21 +3349,20 @@ async def fetch_chat(message,type,channel):
                 await channel.send(attachment_url)
                 break
 
-async def handle_chat(message):
-    prompt = message.content[6:]
+async def handle_chat(message,msg):
     global chat_history
-    chat_history.append({"role": "user", "content": f'Respond to this as {bot_name}: "{prompt}"'})
-    request = openai.ChatCompletion.create(
-    model="gpt-3.5-turbo",
-    messages=chat_history
-    )
+    chat_history.append({"role": "user", "content": f'Respond to this as {bot_name}: "{msg}"'})
+    async with openai.AsyncClient() as client:
+        request = await openai.ChatCompletion.create(
+        model="gpt-3.5-turbo",
+        messages=chat_history
+        )
     chat_history.append({"role": "assistant", "content": request['choices'][0]['message']['content']})
     await message.channel.send(request['choices'][0]['message']['content'])
-    if 'bye' in prompt:
+    if 'bye' in msg:
         await wipe_memory()
 
-async def handle_dm(message):
-    prompt = message.content[10:]
+async def handle_dm(message, prompt):
     global chat_history
     chat_history.append({"role": "user", "content": f'Respond to this as a dungeon master: "{prompt}"'})
     request = openai.ChatCompletion.create(
@@ -2782,9 +3375,7 @@ async def handle_dm(message):
         await wipe_memory()
 
 
-async def handle_generator(message):
-    prompt = message.content[10:]
-    print(prompt)
+async def handle_generator(message,prompt):
     response = openai.Image.create(
     prompt=prompt,
     n=1,
@@ -2796,10 +3387,8 @@ async def handle_generator(message):
         f.write(response.content)
     await message.channel.send(file=discord.File('cache/image.png'))
 
-async def handle_variation(message):
+async def handle_variation(message,url):
     try:
-        url = message.content[10:]
-        print(url)
         response = requests.get(url)
         if url[-2] == 'n':
             with open('cache/image.png', 'wb') as f:
@@ -2891,4 +3480,21 @@ async def handle_voice_channel(message, speak_when_spoken_to = False):
             print(e)
             asyncio.sleep(1)
 
+async def get_permission(ctx):
+    admin = await commands.MemberConverter().convert(ctx, str(admin_id))
+    tmp = await ctx.message.channel.send(f'{admin.mention} React to this message with a 👍 if you want me to execute this command.')
+    await tmp.add_reaction("👍")
+    def check(reaction, user):
+        return user.id == admin_id and str(reaction.emoji) == '👍'
+    try:
+        reaction, user = await client.wait_for('reaction_add', timeout=30.0, check=check)
+    except asyncio.TimeoutError:
+        await ctx.send("Sorry, the command request has timed out.")
+        await tmp.delete()
+        return False
+    else:
+        await tmp.delete()
+        return True
+
+client.load_extension("src.testcog")
 client.run(bot_token)
